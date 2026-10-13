@@ -72,7 +72,8 @@ The vault lives on your machine; nothing is uploaded anywhere. You need Node 22.
 ## Quickstart: hosted
 
 Hosted mode points the same CLI at a Headjack server that you have access to. This repository contains only the client,
-so this section covers configuring the CLI, not the server. You need the server's address and a way to sign in to it.
+so this section covers configuring the CLI, not the server (what a server must provide is in
+[`docs/server-contract.md`](docs/server-contract.md)). You need the server's address and a way to sign in to it.
 Hosted mode alone runs on Node 20.9 or later.
 
 1. **Link the launcher** as in step 2 of Quickstart: local, so that `headjack` is on your `PATH`.
@@ -121,6 +122,29 @@ Hosted mode alone runs on Node 20.9 or later.
 
    A `403` with "missing required skill scope" means the token's scopes are wrong. `harness detect` records which agent
    harnesses this machine has.
+
+## MCP server
+
+`headjack mcp` serves the Model Context Protocol over stdio, so an agent can search the vault, read a skill and ask for its
+install command without a shell. It has four read-only tools: `search_skills`, `get_skill`, `list_my_skills` and
+`install_command`. It changes nothing, and it works on whatever the CLI is set up for: the local vault, or a hosted server
+when `HEADJACK_URL` is set.
+
+The plugin declares the server inline in `.claude-plugin/plugin.json`, so loading the plugin in Claude Code is all it takes.
+To register it in another MCP client, give the client a stdio server whose command is `bin/headjack` and whose argument is
+`mcp`; a client that starts servers with a reduced environment needs an `env` block with `HEADJACK_URL` (hosted) and a
+`PATH` that holds `node`. [`docs/mcp.md`](docs/mcp.md) has the example, the tool schemas, the limits, the error codes and the
+protocol details. Skill text that a tool returns is untrusted source text, never instructions.
+
+### Switching to a hosted server
+
+Both the CLI and the MCP server follow `HEADJACK_URL`: unset, they use the local vault; set, they use that server. To switch,
+set `HEADJACK_URL` where the CLI and the MCP client can see it (for an MCP client with a reduced environment, in its `env`
+block), then run `headjack login` or set `HEADJACK_TOKEN` as in Quickstart: hosted, and restart the MCP client. The MCP server
+reads the credential on every call, so a login made later takes effect with no restart; until then its tools answer
+`unauthenticated`. The local vault is not copied anywhere: `HEADJACK_MODE=local` brings it back at any time. A server must
+meet [`docs/server-contract.md`](docs/server-contract.md), which lists every route, header and field the client relies on and
+the optional browser login; that contract is what a compatible server implements.
 
 ## State directory and `config.json`
 
