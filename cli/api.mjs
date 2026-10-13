@@ -15,10 +15,42 @@ export class ApiError extends Error {
 
 const SESSION_ID = /^[A-Za-z0-9-]{1,64}$/;
 
+// A body that passed the limit the caller set: status 0 like any answer the client could not use, a fixed code to tell it apart.
+const tooLarge = () => new ApiError(0, 'too_large', 'the response is larger than allowed');
+
+// The body of `res` as a Buffer. Without `max` it is read whole, as ever. With one, a declared length over it is refused before
+// a byte is read, and a body that grows past it (no length, or a length that lied) stops being read: the reader is cancelled,
+// which drops the connection, so a server cannot make this process buffer more than `max` plus one chunk.
+async function readBody(res, max) {
+  if (max === undefined) return Buffer.from(await res.arrayBuffer());
+  const declared = res.headers.get('content-length');
+  if (declared !== null && Number(declared) > max) {
+    await res.body?.cancel().catch(() => {});
+    throw tooLarge();
+  }
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, total);
+}
+
 // `credential` comes from loadRemote (cli/config.mjs), which owns the not-logged-in message; `dir` is the state directory
 // an OAuth credential is refreshed in. The refreshed credential replaces the one in memory for later requests. `headers` is
 // a static set sent on every request (a programmatic option, never read from the environment); it cannot replace the bearer.
-export function createApi({ url, credential, dir, fetchImpl = fetch, env = process.env, headers = {} }) {
+// `maxBodyBytes`, when given, bounds every JSON answer (and error body) the client parses: a longer one is a `too_large` ApiError
+// (or, for an error body, ignored). Without it nothing is bounded, which is what the CLI wants.
+export function createApi({ url, credential, dir, fetchImpl = fetch, env = process.env, headers = {}, maxBodyBytes }) {
   if (credential.kind === 'oauth' && !isApiResourceOf(credential.resource, url)) {
     throw new UserError('the saved login is for another server: run headjack login --force');
   }
@@ -52,6 +84,11 @@ export function createApi({ url, credential, dir, fetchImpl = fetch, env = proce
       throw new ApiError(0, 'network', `could not connect to ${url}: ${e.message}`);
     }
   }
+  // The parsed JSON body of `res`.
+  async function json(res) {
+    if (maxBodyBytes === undefined) return res.json();
+    return JSON.parse(new TextDecoder().decode(await readBody(res, maxBodyBytes)));
+  }
   async function call(pathname, extra = {}) {
     let token = await bearer();
     let res = await send(pathname, extra, token);
@@ -62,7 +99,7 @@ export function createApi({ url, credential, dir, fetchImpl = fetch, env = proce
     }
     if (!res.ok) {
       let body = {};
-      try { body = await res.json(); } catch {}
+      try { body = await json(res); } catch {}
       const message = body.error?.message ?? `HTTP ${res.status}`;
       const hint = current.kind === 'api-key' && current.source === 'env' ? 'check HEADJACK_TOKEN' : 'run headjack login';
       throw new ApiError(res.status, body.error?.code ?? 'http_error', res.status === 401 ? `${message}: ${hint}` : message);
@@ -75,7 +112,17 @@ export function createApi({ url, credential, dir, fetchImpl = fetch, env = proce
       const params = new URLSearchParams({ q, k: String(k) });
       if (kind) params.set('kind', kind);
       if (tags.length) params.set('tag', tags.join(','));
-      return (await (await call(`/api/search?${params}`, { headers: { 'x-headjack-purpose': purpose } })).json()).results;
+      return (await json(await call(`/api/search?${params}`, { headers: { 'x-headjack-purpose': purpose } }))).results;
+    },
+    // The catalog page of GET /api/skills (the handler caps `limit` at 100). `tag`: one tag or a list, all required.
+    async list({ kind, tag, limit = 50, offset = 0 } = {}) {
+      const params = new URLSearchParams();
+      if (kind) params.set('kind', kind);
+      const tags = [tag ?? []].flat();
+      if (tags.length) params.set('tag', tags.join(','));
+      params.set('limit', String(limit));
+      params.set('offset', String(offset));
+      return json(await call(`/api/skills?${params}`));
     },
     // Advisory: any failure, non-2xx or timeout resolves undefined so it never changes the caller's outcome.
     async installEvent({ slug, kind, source }, { timeoutMs = 3000 } = {}) {
@@ -99,30 +146,32 @@ export function createApi({ url, credential, dir, fetchImpl = fetch, env = proce
     },
     async getSkill(slug) {
       try {
-        return (await (await call(`/api/skills/${enc(slug)}`)).json()).skill;
+        return (await json(await call(`/api/skills/${enc(slug)}`))).skill;
       } catch (e) {
         if (e.status === 404) return null;
         throw e;
       }
     },
-    async download(slug) {
+    // `maxBytes`, when given, caps the archive: a longer one is a `too_large` ApiError, refused from its declared length or as soon
+    // as the bytes read pass the cap. Without it the whole body is read.
+    async download(slug, { maxBytes } = {}) {
       const res = await call(`/api/skills/${enc(slug)}/download`);
-      return { sha256: res.headers.get('x-skill-sha256'), tarball: Buffer.from(await res.arrayBuffer()) };
+      return { sha256: res.headers.get('x-skill-sha256'), tarball: await readBody(res, maxBytes) };
     },
     async versions(slug) {
-      return (await (await call(`/api/skills/${enc(slug)}/versions`)).json()).versions;
+      return (await json(await call(`/api/skills/${enc(slug)}/versions`))).versions;
     },
     async reviews(slug) {
-      return (await (await call(`/api/skills/${enc(slug)}/reviews`)).json()).reviews;
+      return (await json(await call(`/api/skills/${enc(slug)}/reviews`))).reviews;
     },
     async publish(manifest, tarball) {
       const form = new FormData();
       form.set('manifest', JSON.stringify(manifest));
       if (tarball) form.set('tarball', new Blob([tarball], { type: 'application/gzip' }), `${manifest.slug}.tgz`);
-      return (await call('/api/skills', { method: 'POST', body: form })).json();
+      return json(await call('/api/skills', { method: 'POST', body: form }));
     },
     async updates(grandfathered = false) {
-      return (await (await call(`/api/updates${grandfathered ? '?grandfathered=1' : ''}`)).json()).updates;
+      return (await json(await call(`/api/updates${grandfathered ? '?grandfathered=1' : ''}`))).updates;
     },
   };
 }

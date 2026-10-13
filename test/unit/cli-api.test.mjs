@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -237,4 +238,153 @@ test('the session id header still rides along with an OAuth bearer', async (t) =
   await api.search('a');
   assert.equal(requests[0].headers['x-headjack-session'], 'abc-123');
   assert.equal(requests[0].headers.authorization, 'Bearer access-1');
+});
+
+test('list sends GET /api/skills with the filters and returns the parsed body', async () => {
+  const seen = [];
+  const body = { skills: [{ slug: 'a' }], total: 1, limit: 5, offset: 10 };
+  const fetchImpl = async (url, init) => { seen.push({ url: String(url), authorization: init.headers.authorization, method: init.method }); return json(body); };
+  const api = createApi({ url: HEADJACK, credential: { kind: 'api-key', token: 'ak' }, fetchImpl, env: {} });
+  assert.deepEqual(await api.list({ kind: 'plugin', tag: ['video', 'lantern'], limit: 5, offset: 10 }), body);
+  assert.deepEqual(await api.list({ tag: 'solo' }), body);
+  assert.deepEqual(await api.list(), body);
+  assert.deepEqual(seen.map((s) => s.url), [
+    `${HEADJACK}/api/skills?kind=plugin&tag=video%2Clantern&limit=5&offset=10`,
+    `${HEADJACK}/api/skills?tag=solo&limit=50&offset=0`,
+    `${HEADJACK}/api/skills?limit=50&offset=0`,
+  ]);
+  assert.ok(seen.every((s) => s.authorization === 'Bearer ak' && s.method === undefined));
+});
+
+test('list surfaces a server error as an ApiError', async () => {
+  const fetchImpl = async () => json({ error: { code: 'bad_request', message: 'kind must be skill or plugin' } }, 400);
+  const api = createApi({ url: HEADJACK, credential: { kind: 'api-key', token: 'ak' }, fetchImpl, env: {} });
+  await assert.rejects(api.list({ kind: 'x' }), (e) => e instanceof ApiError && e.status === 400 && e.message === 'kind must be skill or plugin');
+});
+
+// ---- bounded bodies: the optional maxBytes of download and maxBodyBytes of createApi, against a loopback server ----
+
+const MIB = 1024 * 1024;
+
+async function loopback(onRequest) {
+  const sockets = new Set();
+  const server = http.createServer(onRequest);
+  server.on('connection', (socket) => { sockets.add(socket); socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket)); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    stop: () => new Promise((resolve) => { for (const socket of sockets) socket.destroy(); server.close(resolve); }),
+  };
+}
+const apiFor = (url, extra = {}) => createApi({ url, credential: { kind: 'api-key', token: 'ak' }, env: {}, ...extra });
+const until = (predicate, ms = 3000) => new Promise((resolve) => {
+  const started = Date.now();
+  const tick = () => (predicate() || Date.now() - started > ms ? resolve(predicate()) : setTimeout(tick, 10));
+  tick();
+});
+const tooLarge = (e) => e instanceof ApiError && e.status === 0 && e.code === 'too_large';
+
+test('download without a cap reads the whole body, as before', async () => {
+  const body = Buffer.alloc(3 * MIB, 7);
+  const origin = await loopback((req, res) => { res.writeHead(200, { 'x-skill-sha256': 'f'.repeat(64) }).end(body); });
+  try {
+    const got = await apiFor(origin.url).download('big');
+    assert.equal(got.sha256, 'f'.repeat(64));
+    assert.ok(got.tarball.equals(body));
+  } finally {
+    await origin.stop();
+  }
+});
+
+test('download with a cap returns a body that fits, exactly at the cap included', async () => {
+  const body = Buffer.alloc(2 * MIB, 9);
+  const origin = await loopback((req, res) => {
+    // Once with a length, once chunked.
+    if (req.url.includes('chunked')) res.writeHead(200, { 'x-skill-sha256': 'a'.repeat(64) }).write(body, () => res.end());
+    else res.writeHead(200, { 'x-skill-sha256': 'a'.repeat(64), 'content-length': String(body.length) }).end(body);
+  });
+  try {
+    for (const slug of ['sized', 'chunked']) {
+      const got = await apiFor(origin.url).download(slug, { maxBytes: body.length });
+      assert.equal(got.sha256, 'a'.repeat(64), slug);
+      assert.ok(got.tarball.equals(body), slug);
+    }
+    const empty = await loopback((req, res) => { res.writeHead(200).end(); });
+    try {
+      assert.equal((await apiFor(empty.url).download('none', { maxBytes: 10 })).tarball.length, 0);
+    } finally {
+      await empty.stop();
+    }
+  } finally {
+    await origin.stop();
+  }
+});
+
+test('download with a cap refuses a body that declares more, without reading it', async () => {
+  const seen = { closed: false };
+  const origin = await loopback((req, res) => {
+    res.writeHead(200, { 'content-length': String(300 * MIB), 'x-skill-sha256': 'a'.repeat(64) });
+    res.on('close', () => { seen.closed = true; });
+    res.write(Buffer.alloc(1024));
+  });
+  try {
+    await assert.rejects(apiFor(origin.url).download('big', { maxBytes: 16 * MIB }), tooLarge);
+    assert.equal(await until(() => seen.closed), true, 'the connection was dropped');
+  } finally {
+    await origin.stop();
+  }
+});
+
+test('download with a cap stops reading a chunked body once it passes the cap', async () => {
+  const seen = { closed: false, written: 0 };
+  const origin = await loopback((req, res) => {
+    res.writeHead(200, { 'x-skill-sha256': 'a'.repeat(64) });
+    res.on('close', () => { seen.closed = true; });
+    const chunk = Buffer.alloc(MIB);
+    const pump = () => {
+      while (!seen.closed && seen.written < 300 * MIB) {
+        seen.written += chunk.length;
+        if (!res.write(chunk)) return void res.once('drain', pump);
+      }
+      res.end();
+    };
+    pump();
+  });
+  try {
+    await assert.rejects(apiFor(origin.url).download('big', { maxBytes: 4 * MIB }), tooLarge);
+    assert.equal(await until(() => seen.closed), true, 'the connection was dropped');
+    assert.ok(seen.written < 100 * MIB, `the server wrote ${seen.written} bytes before it was stopped`);
+  } finally {
+    await origin.stop();
+  }
+});
+
+test('download with a cap still reports an error status as an ApiError', async () => {
+  const origin = await loopback((req, res) => {
+    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { code: 'not_found', message: 'no such skill' } }));
+  });
+  try {
+    await assert.rejects(apiFor(origin.url).download('x', { maxBytes: 10 }), (e) => e instanceof ApiError && e.status === 404 && e.code === 'not_found');
+  } finally {
+    await origin.stop();
+  }
+});
+
+test('maxBodyBytes bounds a JSON answer and an error body; without it nothing changes', async () => {
+  const big = JSON.stringify({ results: Array.from({ length: 4000 }, (_, i) => ({ slug: `s${i}`, description: 'x'.repeat(100) })) });
+  assert.ok(big.length > 400000);
+  const origin = await loopback((req, res) => {
+    if (req.url.startsWith('/api/search')) res.writeHead(200, { 'content-type': 'application/json' }).end(big);
+    else res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { code: 'internal', message: 'm'.repeat(400000) } }));
+  });
+  try {
+    assert.equal((await apiFor(origin.url).search('q')).length, 4000, 'no cap: the whole answer');
+    assert.equal((await apiFor(origin.url, { maxBodyBytes: 1 * MIB }).search('q')).length, 4000, 'under the cap');
+    await assert.rejects(apiFor(origin.url, { maxBodyBytes: 100000 }).search('q'), tooLarge);
+    // An error body over the cap is ignored, not parsed: the status still decides.
+    await assert.rejects(apiFor(origin.url, { maxBodyBytes: 100000 }).getSkill('x'), (e) => e instanceof ApiError && e.status === 500 && e.code === 'http_error');
+    await assert.rejects(apiFor(origin.url).getSkill('x'), (e) => e instanceof ApiError && e.status === 500 && e.code === 'internal');
+  } finally {
+    await origin.stop();
+  }
 });

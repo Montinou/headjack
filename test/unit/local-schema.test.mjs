@@ -3,6 +3,7 @@ import path from 'node:path';
 import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { localSupported, localTest } from '../local-helpers.mjs';
 import { tempDir } from '../helpers.mjs';
+import { UserError } from '../../lib/errors.mjs';
 import { runtimeCheck } from '../../lib/local/runtime.mjs';
 import { MIGRATIONS, isBusy, openVault, vaultInfo } from '../../lib/local/schema.mjs';
 
@@ -52,6 +53,17 @@ localTest('openVault reports a file SQLite cannot read as an invalid vault and l
   await writeFile(file, junk);
   assert.throws(() => openVault({ dir, DatabaseSync }), (e) => /is not a valid vault/.test(e.message) && e.message.startsWith(file));
   assert.deepEqual(await readFile(file), junk);
+});
+
+localTest('a file SQLite cannot read carries the vault_damaged code, a newer vault does not', async () => {
+  const dir = await tempDir('sv-vault-');
+  await writeFile(path.join(dir, 'vault.db'), Buffer.from('these are my notes, not a database\n'.repeat(40)));
+  assert.throws(() => openVault({ dir, DatabaseSync }), (e) => e instanceof UserError && e.code === 'vault_damaged');
+  const newer = await tempDir('sv-vault-');
+  const raw = new DatabaseSync(path.join(newer, 'vault.db'));
+  raw.exec(`PRAGMA user_version = ${MIGRATIONS.length + 1}`);
+  raw.close();
+  assert.throws(() => openVault({ dir: newer, DatabaseSync }), (e) => e instanceof UserError && e.code === undefined);
 });
 
 localTest('isBusy is true for the lock error of a second writer and false for an ordinary Error', async () => {

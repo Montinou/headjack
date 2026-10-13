@@ -4,10 +4,10 @@ import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
 import { access, readFile } from 'node:fs/promises';
 import { UserError, EofError } from '../lib/errors.mjs';
-import { loadRemote, loadUrl, resolveMode } from './config.mjs';
+import { loadUrl, resolveMode } from './config.mjs';
 import { tokenFile } from './credentials.mjs';
 import { stateDir } from './local-config.mjs';
-import { ApiError, createApi } from './api.mjs';
+import { guardLocal, openApi } from './connect.mjs';
 import { exitCodeFor } from './exit.mjs';
 import { loadState, findEntry } from './state.mjs';
 import { add, remove, list, verify, gc, cleanup } from './install.mjs';
@@ -36,6 +36,7 @@ const USAGE = `headjack — personal skill vault
   headjack verify
   headjack restore <backup-dir>
   headjack gc
+  headjack mcp
 
 Harness ids: claude, codex, grok and any that "harness detect" finds (gemini, cursor, windsurf, …);
 "all" = every detected one. --session marks the install so that "cleanup" removes it.
@@ -45,7 +46,9 @@ HEADJACK_MODE=local|remote overrides. Needs Node 22.16+ or 24+ for local mode.
 Config: HEADJACK_URL, and the credential: "headjack login" (a browser sign-in, saved in <state dir>/token) or
 an API key with skills:read (and skills:write for review) in HEADJACK_TOKEN or in that file (chmod 600).
 State dir: $HEADJACK_HOME, default ~/.headjack. HEADJACK_TOKEN wins over the file.
-HEADJACK_PURPOSE sets the default --purpose.`;
+HEADJACK_PURPOSE sets the default --purpose.
+mcp serves the Model Context Protocol over stdio (read-only tools: search_skills, get_skill, list_my_skills, install_command) on
+the same vault or server; a client starts it, and it ends when its input closes. HEADJACK_MCP_TIMEOUT_MS sets the request timeout.`;
 
 const OPTIONS = {
   help: { type: 'boolean', short: 'h' },
@@ -98,6 +101,26 @@ async function enabledPlugins(home) {
   } catch { return {}; }
 }
 
+// The plugin's own version, for the MCP server info. A missing or unreadable manifest must not stop the server.
+async function pluginVersion() {
+  try {
+    const { version } = JSON.parse(await readFile(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'));
+    return typeof version === 'string' && version ? version : '0.0.0';
+  } catch { return '0.0.0'; }
+}
+
+// The mode and the server named in the MCP `instructions`, computed without throwing: a bad HEADJACK_MODE or HEADJACK_URL must
+// not end the process before `initialize`, and the first tool call reports it.
+function mcpEnvironment(env) {
+  let mode = 'unconfigured';
+  try { mode = resolveMode(env) === 'local' ? 'local' : 'hosted'; } catch { /* reported by the first tool call */ }
+  let origin;
+  if (mode === 'hosted') {
+    try { origin = loadUrl(env); } catch { /* the generic hosted text */ }
+  }
+  return { mode, origin };
+}
+
 function need(value, usage) {
   if (!value) throw new UserError(`usage: headjack ${usage}`);
   return value;
@@ -132,32 +155,14 @@ async function main(argv) {
     },
   };
   const isLocal = () => resolveMode(process.env) === 'local';
-  // Local mode only: lib/local is imported here, never for a hosted command, so hosted mode never loads the SQLite module. A
-  // state directory that cannot be created, opened or written is one line naming it; a busy vault exits 3.
-  const local = async (open) => {
-    const { isBusy } = await import('../lib/local/schema.mjs');
-    try {
-      return await open();
-    } catch (e) {
-      if (isBusy(e)) throw new ApiError(503, 'unavailable', 'vault is busy, try again');
-      if (e instanceof UserError || typeof e?.code !== 'string' || !(/^E[A-Z0-9]+$/.test(e.code) || e.code === 'ERR_SQLITE_ERROR')) throw e;
-      throw new UserError(`cannot use the state directory ${ctx.dir} (${e.code === 'ERR_SQLITE_ERROR' ? e.message : e.code})`);
-    }
-  };
+  const local = (open) => guardLocal(ctx.dir, open);
   const openVault = () => local(async () => {
     const { runtimeCheck } = await import('../lib/local/runtime.mjs');
     const { openVault: open } = await import('../lib/local/schema.mjs');
     return open({ dir: ctx.dir, DatabaseSync: (await runtimeCheck()).DatabaseSync });
   });
   const connect = async () => {
-    if (!isLocal()) { ctx.api = createApi({ ...(await loadRemote({ env: process.env, dir: ctx.dir })), dir: ctx.dir }); return; }
-    // A hosted user who lost HEADJACK_URL (a new shell, a cleared env) would otherwise search an empty local vault unaware.
-    // Only an implicit local mode with a saved login says so; HEADJACK_MODE=local is the user's explicit choice.
-    if (!process.env.HEADJACK_MODE && (await access(tokenFile(ctx.dir)).then(() => true, () => false))) {
-      console.error('headjack: HEADJACK_URL is not set, using the local vault; set HEADJACK_URL (or HEADJACK_MODE=remote) to use your hosted vault');
-    }
-    const { createLocalApi } = await import('../lib/local/api.mjs');
-    const { api, close } = await local(() => createLocalApi({ dir: ctx.dir, env: process.env }));
+    const { api, close } = await openApi(ctx);
     ctx.api = api;
     ctx.closeApi = close;
   };
@@ -350,6 +355,21 @@ async function main(argv) {
         if (!found.length) console.log('no harness detected');
         for (const h of found) console.log(`${h}  ${skillsDir(h, { home })}`);
         console.log(`saved to ${path.join(ctx.dir, 'harnesses.json')}`);
+        return 0;
+      }
+      case 'mcp': {
+        const [{ createMcpServer, serveStdio, timeoutMs, withTimeout, MAX_JSON_BYTES }, { createTools }] = await Promise.all([import('./mcp.mjs'), import('./mcp-tools.mjs')]);
+        const env = process.env;
+        const fetchImpl = withTimeout(fetch, timeoutMs(env));
+        // stdout is the protocol channel: this process's own notices go to stderr, never through ctx.log.
+        const log = (message) => process.stderr.write(`${message}\n`);
+        const server = createMcpServer({
+          tools: createTools(),
+          openApi: () => openApi(ctx, { env, log, fetchImpl, maxBodyBytes: MAX_JSON_BYTES }),
+          version: await pluginVersion(),
+          ...mcpEnvironment(env),
+        });
+        await serveStdio(server, { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr });
         return 0;
       }
       case 'gc': {

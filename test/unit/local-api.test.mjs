@@ -159,3 +159,43 @@ localTest('a build that fails after the vault opened closes the database', async
   await assert.rejects(createLocalApi({ dir, env }), /boom/);
   assert.equal(await exists(walOf(dir)), false);
 });
+
+localTest('the in-process api lists published skills with kind and tag filters and pages them', async () => {
+  const dir = await tempDir('sv-local-api-');
+  const { api, route, close } = await createLocalApi({ dir });
+  try {
+    const publish = async (slug, kind, tags, status = 'approved') => {
+      const f = [file('SKILL.md', `---\nname: ${slug}\ndescription: the ${slug}\n---\n# ${slug}`)];
+      await api.publish({
+        slug, name: slug, description: `the ${slug}`, kind, tags, source: { kind: 'local' }, sha256: hashFiles(f), status,
+        review_notes: 'ok', scan_flags: [], chunks: [`${slug}: the ${slug}`],
+      }, pack(f));
+    };
+    assert.deepEqual(await api.list(), { skills: [], total: 0, limit: 50, offset: 0 });
+    await publish('cherry', 'skill', ['fruit', 'red']);
+    await publish('apple', 'skill', ['fruit', 'red']);
+    await publish('banana', 'skill', ['fruit']);
+    await publish('toolbox', 'plugin', ['tools']);
+
+    const all = await api.list();
+    assert.deepEqual(all.skills.map((s) => s.slug), ['apple', 'banana', 'cherry', 'toolbox']);
+    assert.deepEqual([all.total, all.limit, all.offset], [4, 50, 0]);
+    assert.deepEqual(Object.keys(all.skills[0]).sort(), [
+      'description', 'has_approved_version', 'kind', 'name', 'plugin_slug', 'quality', 'slug', 'tags', 'update_available',
+    ]);
+    assert.equal(all.skills[0].has_approved_version, true);
+
+    assert.deepEqual((await api.list({ kind: 'plugin' })).skills.map((s) => s.slug), ['toolbox']);
+    assert.deepEqual((await api.list({ tag: ['fruit', 'red'] })).skills.map((s) => s.slug), ['apple', 'cherry']);
+    assert.deepEqual((await api.list({ tag: 'fruit', kind: 'plugin' })), { skills: [], total: 0, limit: 50, offset: 0 });
+
+    const page = await api.list({ limit: 2, offset: 1 });
+    assert.deepEqual(page.skills.map((s) => s.slug), ['banana', 'cherry']);
+    assert.deepEqual([page.total, page.limit, page.offset], [4, 2, 1]);
+
+    await assert.rejects(api.list({ kind: 'bogus' }), (e) => e instanceof ApiError && e.status === 400);
+    assert.equal((await route(`${URL_BASE}/api/skills`, { method: 'DELETE' })).status, 404);
+  } finally {
+    close();
+  }
+});
