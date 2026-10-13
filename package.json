@@ -1,0 +1,11 @@
+{
+  "name": "headjack",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.16"
+  },
+  "scripts": {
+    "test": "node --test \"test/unit/**/*.test.mjs\""
+  }
+}
