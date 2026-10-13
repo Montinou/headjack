@@ -1,0 +1,16 @@
+#!/bin/sh
+# Launcher for the headjack CLI. Resolves its own symlinks (a plugin's bin/ on PATH, or the README's `ln -s`) with a
+# readlink loop, because `readlink -f` is missing on older macOS, then runs the CLI with the Node on PATH.
+self=$0
+while [ -L "$self" ]; do
+  dir=$(cd "$(dirname "$self")" && pwd -P)
+  target=$(readlink "$self")
+  case $target in
+    /*) self=$target ;;
+    *) self=$dir/$target ;;
+  esac
+done
+# -P: resolve `..` physically, so a bin/ directory reached through a symlink still leads to the repository root.
+# CDPATH= : an exported CDPATH would make a relative `cd bin/..` enter another directory and print it.
+root=$(CDPATH= cd -P "$(dirname "$self")/.." && pwd -P) || exit 1
+exec node "$root/cli/headjack.mjs" "$@"
