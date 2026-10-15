@@ -1,7 +1,7 @@
 // Lets headjack_app log in on one branch with the password in HEADJACK_APP_DB_PASSWORD (never stored in git).
 // Needs DATABASE_URL_OWNER and HEADJACK_APP_DB_PASSWORD in the environment. Do not put them on the command line: read
-// both at a hidden prompt and export them inside ( ... ), then run `node scripts/set-app-password.mjs` there (README,
-// "Give the app role a password").
+// both at a hidden prompt and export them inside ( ... ), then run `node scripts/set-app-password.mjs` there
+// (docs/operations.md, step 4).
 // The role itself (NOLOGIN, no BYPASSRLS) is created by drizzle/0001_app_foundation.sql.
 import { pathToFileURL } from 'node:url';
 import { realpath } from 'node:fs/promises';
