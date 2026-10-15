@@ -13,9 +13,9 @@ test('the plugin is named headjack and its version is x.y.z', () => {
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
 });
 
-test('bin/headjack exists and is executable', () => {
-  const launcher = path.join(ROOT, 'bin/headjack');
-  assert.ok(statSync(launcher).isFile(), 'bin/headjack is a file');
+test('cli/headjack exists and is executable', () => {
+  const launcher = path.join(ROOT, 'cli/headjack');
+  assert.ok(statSync(launcher).isFile(), 'cli/headjack is a file');
   accessSync(launcher, constants.X_OK);
 });
 
@@ -28,7 +28,7 @@ test('the skills path of the manifest exists and holds SKILL.md', () => {
 
 test('the plugin declares the headjack MCP server inline, at a semver version', () => {
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-  assert.deepEqual(manifest.mcpServers, { headjack: { command: '${CLAUDE_PLUGIN_ROOT}/bin/headjack', args: ['mcp'] } });
+  assert.deepEqual(manifest.mcpServers, { headjack: { command: '${CLAUDE_PLUGIN_ROOT}/cli/headjack', args: ['mcp'] } });
   // A .mcp.json at the root would be read as project configuration in any checkout of the repository.
   assert.equal(existsSync(path.join(ROOT, '.mcp.json')), false);
 });

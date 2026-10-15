@@ -18,7 +18,7 @@ import { runtimeCheck } from '../../lib/local/runtime.mjs';
 import { openVault } from '../../lib/local/schema.mjs';
 import { pack } from '../../lib/tar.mjs';
 
-const BIN = fileURLToPath(new URL('../../bin/headjack', import.meta.url));
+const BIN = fileURLToPath(new URL('../../cli/headjack', import.meta.url));
 const PLUGIN = JSON.parse(await readFile(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8'));
 const PATH_DIRS = [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter);
 const REPLY_MS = 10000; // far below the 30 s default of the request timeout, so a timeout that is not wired fails a test

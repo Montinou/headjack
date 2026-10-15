@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Guard: a change to a file the plugin ships must come with a plugin version change, so installed plugins update.
-// Shipped = bin/headjack, the static import closure of cli/headjack.mjs, skill-finder/ and .claude-plugin/.
+// Shipped = cli/headjack, the static import closure of cli/headjack.mjs, skill-finder/ and .claude-plugin/.
 //   node scripts/plugin-version-check.mjs --base <ref>     exit 0 when ok, 1 naming the first changed shipped file, 2 on usage
 // Node built-ins plus git and tar; the closure walk comes from test/import-scanner.mjs, which ships in the public tree.
 import { spawn, execFile } from 'node:child_process';
@@ -58,7 +58,7 @@ export async function shippedFiles({ cwd: from, ref }) {
   try {
     await extract(cwd, ref, tmp);
     const files = new Set();
-    if (await exists(cwd, ref, 'bin/headjack')) files.add('bin/headjack');
+    if (await exists(cwd, ref, 'cli/headjack')) files.add('cli/headjack');
     if (await exists(cwd, ref, 'cli/headjack.mjs')) for (const f of (await importGraph('cli/headjack.mjs', { root: tmp })).files) files.add(f);
     const listed = await git(cwd, ['ls-tree', '-r', '-z', '--name-only', ref, '--', 'skill-finder', '.claude-plugin']);
     for (const f of listed.split('\0').filter(Boolean)) files.add(f);

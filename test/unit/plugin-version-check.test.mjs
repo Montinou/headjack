@@ -1,4 +1,4 @@
-// The plugin version guard: a change to a file the plugin ships (bin/headjack, the CLI import closure, skill-finder/,
+// The plugin version guard: a change to a file the plugin ships (cli/headjack, the CLI import closure, skill-finder/,
 // .claude-plugin/) must come with a plugin version change. Each case runs against a throwaway git repository.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,7 +20,7 @@ const manifest = (version) => JSON.stringify({ name: 'headjack', version }) + '\
 // main: a plugin whose closure is cli/headjack.mjs -> lib/a.mjs, plus a docs file. `feature` branches from it.
 async function fixture(overrides = {}) {
   const cwd = await makeDir({
-    'bin/headjack': '#!/bin/sh\nexec node cli/headjack.mjs\n',
+    'cli/headjack': '#!/bin/sh\nexec node cli/headjack.mjs\n',
     'cli/headjack.mjs': "import '../lib/a.mjs';\n",
     'lib/a.mjs': "import './b.mjs';\nexport const a = 1;\n",
     'lib/b.mjs': 'export const b = 1;\n',
@@ -46,7 +46,7 @@ test('shippedFiles lists the launcher, the CLI closure, skill-finder and the plu
   const cwd = await fixture();
   assert.deepEqual(await shippedFiles({ cwd, ref: 'main' }), [
     '.claude-plugin/plugin.json',
-    'bin/headjack',
+    'cli/headjack',
     'cli/headjack.mjs',
     'lib/a.mjs',
     'lib/b.mjs',

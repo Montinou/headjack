@@ -51,17 +51,17 @@ To get there:
    claude --plugin-dir /path/to/headjack
    ```
 
-   While the plugin is enabled, its `bin/` is on the `PATH` of the shell Claude Code's Bash tool runs, so the agent can
-   run `headjack` by name, and the `skill-finder` skill teaches it to. The plugin also registers the local MCP server. The
-   vault itself stays in `~/.headjack`, outside the plugin, so a plugin update never touches it.
-2. **Let your terminal find `headjack` too.** A plugin's `bin/` is not on the `PATH` of your own terminal. Skip this step
-   only if you never type `headjack` yourself (the agent runs it from the plugin's `bin/`); the next steps are commands you
-   run in your own terminal, and `import --interactive` asks you questions an agent's shell cannot answer. Link the
-   launcher once from your clone. Do not link into the plugin's own directory: that link dangles after a plugin update.
+   The plugin registers the local MCP server, and its `skill-finder` skill tells the agent to run the CLI through the
+   plugin's launcher, `cli/headjack`. The vault itself stays in `~/.headjack`, outside the plugin, so a plugin update never
+   touches it.
+2. **Let your terminal find `headjack` too.** The plugin puts nothing on the `PATH` of your own terminal. Skip this step
+   only if you never type `headjack` yourself; the next steps are commands you run in your own terminal, and
+   `import --interactive` asks you questions an agent's shell cannot answer. Link the launcher once from your clone. Do not
+   link into the plugin's own directory: that link dangles after a plugin update.
 
    ```sh
    mkdir -p ~/.local/bin
-   ln -s "$PWD/bin/headjack" ~/.local/bin/headjack     # run from your clone; ~/.local/bin must be on your PATH
+   ln -s "$PWD/cli/headjack" ~/.local/bin/headjack     # run from your clone; ~/.local/bin must be on your PATH
    ```
 
 3. **See what would be imported.** This scans `~/.agents/skills` and the Claude, Codex and Grok skills directories,
