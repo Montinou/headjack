@@ -146,7 +146,8 @@ Preview holds the production `HEADJACK_APP_DB_PASSWORD`, and its database branch
 [`migrations.md`](migrations.md)). So a maintainer never authorizes a Vercel deployment for a pull request from a fork
 (Vercel asks for an explicit "Authorize" on each one), and never pushes a contributor's commits to a branch of this
 repository before reviewing them, because that deploys them without the prompt. GitHub CI, which gets no secrets for a
-fork, is the check for outside pull requests.
+fork, is the check for outside pull requests. Keep Vercel's Git fork protection on in the project settings: it is what
+makes that "Authorize" prompt appear.
 
 ## Environment variables
 
