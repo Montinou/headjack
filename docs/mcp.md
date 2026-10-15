@@ -25,7 +25,7 @@ is all there is to do. The declaration is:
 {
   "mcpServers": {
     "headjack": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/headjack",
+      "command": "${CLAUDE_PLUGIN_ROOT}/cli/headjack",
       "args": ["mcp"]
     }
   }
@@ -42,7 +42,7 @@ This is the usual JSON shape (the file and the key names differ between clients)
 {
   "mcpServers": {
     "headjack": {
-      "command": "/path/to/headjack/bin/headjack",
+      "command": "/path/to/headjack/cli/headjack",
       "args": ["mcp"],
       "env": {
         "HEADJACK_URL": "https://headjack.example.invalid"

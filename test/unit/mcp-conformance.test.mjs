@@ -13,7 +13,7 @@ import { hashFiles } from '../../lib/hash.mjs';
 import { createLocalApi } from '../../lib/local/api.mjs';
 import { pack } from '../../lib/tar.mjs';
 
-const BIN = fileURLToPath(new URL('../../bin/headjack', import.meta.url));
+const BIN = fileURLToPath(new URL('../../cli/headjack', import.meta.url));
 const PATH_DIRS = [path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter);
 
 async function vault() {

@@ -39,9 +39,9 @@ test('the manifest author is the name from LICENSE only, with no email, URL or r
   assert.doesNotMatch(JSON.stringify(manifest), /@|https?:\/\//);
 });
 
-test('bin/headjack is executable and committed with mode 100755', { skip: inGitCheckout() ? false : 'not a git checkout' }, () => {
-  accessSync(path.join(ROOT, 'bin/headjack'), constants.X_OK);
-  const entry = execFileSync('git', ['ls-files', '-s', 'bin/headjack'], { cwd: ROOT, encoding: 'utf8' });
+test('cli/headjack is executable and committed with mode 100755', { skip: inGitCheckout() ? false : 'not a git checkout' }, () => {
+  accessSync(path.join(ROOT, 'cli/headjack'), constants.X_OK);
+  const entry = execFileSync('git', ['ls-files', '-s', 'cli/headjack'], { cwd: ROOT, encoding: 'utf8' });
   assert.match(entry, /^100755 /);
 });
 
@@ -51,7 +51,7 @@ test('the launcher works through a symlink, with a temporary HOME and no Node fl
   const nested = path.join(dir, 'a', 'b');
   mkdirSync(nested, { recursive: true });
   // A chain of two links, so the readlink loop has to resolve more than one hop.
-  symlinkSync(path.join(ROOT, 'bin/headjack'), path.join(dir, 'a', 'first'));
+  symlinkSync(path.join(ROOT, 'cli/headjack'), path.join(dir, 'a', 'first'));
   symlinkSync(path.join(dir, 'a', 'first'), path.join(nested, 'headjack'));
   const result = spawnSync(path.join(nested, 'headjack'), ['--help'], {
     cwd: dir,
@@ -65,9 +65,9 @@ test('the launcher works through a symlink, with a temporary HOME and no Node fl
 test('the launcher ignores CDPATH when it resolves its own directory', async () => {
   const dir = await tempDir('sv-plugin-cdpath-');
   const home = await tempDir('sv-plugin-home-');
-  // A decoy: with CDPATH=<dir>, a plain `cd bin/..` would enter <dir>/bin/.. (<dir>) instead of the repository root.
-  mkdirSync(path.join(dir, 'bin'), { recursive: true });
-  const result = spawnSync('sh', ['bin/headjack', '--help'], {
+  // A decoy: with CDPATH=<dir>, a plain `cd cli/..` would enter <dir>/cli/.. (<dir>) instead of the repository root.
+  mkdirSync(path.join(dir, 'cli'), { recursive: true });
+  const result = spawnSync('sh', ['cli/headjack', '--help'], {
     cwd: ROOT,
     env: { PATH: process.env.PATH, HOME: home, CDPATH: dir },
     encoding: 'utf8',
@@ -76,13 +76,13 @@ test('the launcher ignores CDPATH when it resolves its own directory', async () 
   assert.match(result.stdout, /^headjack/);
 });
 
-test('the launcher finds the repository root when its bin/ directory is itself reached through a symlink', async () => {
-  const dir = await tempDir('sv-plugin-linkedbin-');
+test('the launcher finds the repository root when its cli/ directory is itself reached through a symlink', async () => {
+  const dir = await tempDir('sv-plugin-linkedcli-');
   const home = await tempDir('sv-plugin-home-');
-  mkdirSync(path.join(dir, 'linkedbin'), { recursive: true });
-  // <dir>/linkedbin/bin -> <repo>/bin: a logical `..` would land in <dir>, a physical one in the repository.
-  symlinkSync(path.join(ROOT, 'bin'), path.join(dir, 'linkedbin', 'bin'));
-  const result = spawnSync(path.join(dir, 'linkedbin', 'bin', 'headjack'), ['--help'], {
+  mkdirSync(path.join(dir, 'linkedcli'), { recursive: true });
+  // <dir>/linkedcli/cli -> <repo>/cli: a logical `..` would land in <dir>, a physical one in the repository.
+  symlinkSync(path.join(ROOT, 'cli'), path.join(dir, 'linkedcli', 'cli'));
+  const result = spawnSync(path.join(dir, 'linkedcli', 'cli', 'headjack'), ['--help'], {
     cwd: dir,
     env: { PATH: process.env.PATH, HOME: home },
     encoding: 'utf8',
@@ -93,7 +93,7 @@ test('the launcher finds the repository root when its bin/ directory is itself r
 
 test('the launcher passes arguments through and keeps the exit code', async () => {
   const home = await tempDir('sv-plugin-home-');
-  const result = spawnSync(path.join(ROOT, 'bin/headjack'), ['no-such-command'], {
+  const result = spawnSync(path.join(ROOT, 'cli/headjack'), ['no-such-command'], {
     env: { PATH: process.env.PATH, HOME: home },
     encoding: 'utf8',
   });
@@ -103,7 +103,7 @@ test('the launcher passes arguments through and keeps the exit code', async () =
 
 test('git tracks the launcher and the plugin manifest', () => {
   const tracked = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' }).split('\n');
-  assert.ok(tracked.includes('bin/headjack'));
+  assert.ok(tracked.includes('cli/headjack'));
   assert.ok(tracked.includes('.claude-plugin/plugin.json'));
 });
 
@@ -115,7 +115,7 @@ test('the README has Quickstart: local before Hosted (invite-only), and names HE
   assert.ok(hosted > local, 'Hosted (invite-only) must come after Quickstart: local');
   assert.match(readme, /HEADJACK_MODE/);
   assert.match(readme, /Node 22\.16/);
-  assert.match(readme, /ln -s .*bin\/headjack/);
+  assert.match(readme, /ln -s .*cli\/headjack/);
 });
 
 test('skill-finder/SKILL.md does not rely on CLAUDE_PLUGIN_ROOT', () => {

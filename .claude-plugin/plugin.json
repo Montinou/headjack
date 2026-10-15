@@ -1,11 +1,11 @@
 {
   "name": "headjack",
   "description": "A personal vault for agent skills: import the skills you already have, then search and install them only when a task needs them. Runs locally on SQLite, no server.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "skills": "./skill-finder",
   "mcpServers": {
     "headjack": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/headjack",
+      "command": "${CLAUDE_PLUGIN_ROOT}/cli/headjack",
       "args": ["mcp"]
     }
   },

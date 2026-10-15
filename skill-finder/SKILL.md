@@ -3,6 +3,9 @@ name: skill-finder
 description: Use when a task needs a capability, tool integration, or domain workflow you don't have loaded — search the personal skill vault before improvising or installing anything from the internet.
 ---
 
+`headjack` below is the Headjack CLI: run it by name when it is on your `PATH`; inside the Claude Code plugin, run
+`"${CLAUDE_SKILL_DIR}/../cli/headjack"` instead.
+
 1. **Search.** Run `headjack search "<need in English>" --json` (optionally `--tag a,b`).
    Show the user the top 3: slug, description, and whether it is already active.
 2. **Ask the user before installing.** Do not add anything without a yes.

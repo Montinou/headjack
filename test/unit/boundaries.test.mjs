@@ -15,8 +15,8 @@ test('the CLI and the lib modules it imports use only node: built-ins and never 
   assert.ok(!files.includes('lib/db.mjs'), 'the CLI never reaches the database module');
 });
 
-test('bin/headjack runs cli/headjack.mjs', async () => {
-  const launcher = await readFile(path.join(ROOT, 'bin/headjack'), 'utf8');
+test('cli/headjack runs cli/headjack.mjs', async () => {
+  const launcher = await readFile(path.join(ROOT, 'cli/headjack'), 'utf8');
   assert.match(launcher, /^#!\/bin\/sh/);
   assert.match(launcher, /^exec node "\$root\/cli\/headjack\.mjs" "\$@"$/m);
 });
