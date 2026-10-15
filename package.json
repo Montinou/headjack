@@ -40,7 +40,7 @@
     "flags": "^4.3.1",
     "lucide-react": "^1.52.0",
     "mcp-handler": "2.2.0",
-    "next": "16.3.6",
+    "next": "16.3.8",
     "radix-ui": "^1.7.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -63,5 +63,10 @@
     "postcss": "^8.5.29",
     "tailwindcss": "^4.3.3",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "^0.25.0"
+    }
   }
 }
