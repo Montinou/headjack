@@ -16,32 +16,38 @@ concurrency:
 jobs:
   test:
     name: test (Node 24)
+    # The private source repository carries this file too and must not spend CI minutes.
+    if: github.repository == 'Montinou/headjack'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Full history: the plugin version guard diffs the pull request against its base branch.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          fetch-depth: 0
           persist-credentials: false
       # Node 24 is the line the suite is verified on: tests in cli-credentials and cli-oauth rely on Node 24's test runner
       # keeping an idle event loop alive, and on Node 22 (checked on 22.16 and 22.18) the runner cancels them.
-      # There is no lockfile and nothing to install, so there is no dependency cache either.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
+          cache: npm
+      # The plugin's CLI must run with no npm install, so this step runs before `npm ci`.
+      - name: CLI runs without installed packages
+        run: |
+          env -u HEADJACK_URL node cli/headjack.mjs --help
+          env -u HEADJACK_URL HEADJACK_HOME=$(mktemp -d) node cli/headjack.mjs search test --json
+      - name: Install
+        run: npm ci
+      # HEADJACK_DENY_LIST (one instance value per line) feeds test/unit/no-personal-data.test.mjs. A fork pull request gets
+      # the secret as an empty string, which the test treats as absent.
       - name: Test
         run: npm test
-      # The version in .claude-plugin/plugin.json is set by the maintainer's export, never by a pull request.
-      - name: Plugin version is not changed by the pull request
+        env:
+          HEADJACK_DENY_LIST: ${{ secrets.HEADJACK_DENY_LIST }}
+      # A change to a shipped plugin file needs a plugin version change (.claude-plugin/plugin.json).
+      - name: Plugin version changes with shipped files
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: |
-          git fetch --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
-          version() { node -p "JSON.parse(require('node:fs').readFileSync(0, 'utf8')).version"; }
-          base=$(git show "origin/${BASE_REF}:.claude-plugin/plugin.json" | version)
-          head=$(version < .claude-plugin/plugin.json)
-          echo "base version: ${base}, pull request version: ${head}"
-          if [ "${base}" != "${head}" ]; then
-            echo "::error file=.claude-plugin/plugin.json::The plugin version is set by the maintainer's export; leave it unchanged."
-            exit 1
-          fi
+        run: node scripts/plugin-version-check.mjs --base "origin/${BASE_REF}"

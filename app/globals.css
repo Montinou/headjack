@@ -1,0 +1,608 @@
+@layer theme, base, components, utilities;
+
+/* Tailwind theme and utilities only. Preflight is not imported: the classic page
+   (premium-ui off) must keep browser defaults, so the reset below is scoped. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Dark styles follow a .dark class, which nothing sets: the UI stays light even
+   when the operating system prefers dark. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: var(--font-manrope);
+  --font-mono: var(--font-ibm-plex-mono);
+
+  /* Spec section 5: 8 px controls (rounded-md), 12 px cards (rounded-lg). */
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  --color-paper: var(--paper);
+  --color-paper-raised: var(--paper-raised);
+  --color-rule: var(--rule);
+  --color-ink-title: var(--ink-title);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-cobalt: var(--cobalt);
+  --color-cobalt-hover: var(--cobalt-hover);
+  --color-cobalt-soft: var(--cobalt-soft);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  /* Paper and cobalt palette (spec section 5); lib/ui/tokens.mjs holds the same values. */
+  --paper: #F6F2EA;
+  --paper-raised: #FBF9F4;
+  --rule: #E3DCCD;
+  --ink-title: #152150;
+  --ink: #2B2A26;
+  --ink-muted: #6B6457;
+  --cobalt: #1E4FD8;
+  --cobalt-hover: #1A43B8;
+  --cobalt-soft: #E8EEFC;
+  --success: #256B40;
+  --warning: #8F5B0E;
+  --danger: #B42318;
+
+  /* shadcn/ui theme variables, mapped onto the palette. */
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: var(--paper-raised);
+  --card-foreground: var(--ink);
+  --popover: var(--paper-raised);
+  --popover-foreground: var(--ink);
+  --primary: var(--cobalt);
+  --primary-foreground: #FFFFFF;
+  --secondary: var(--cobalt-soft);
+  --secondary-foreground: var(--ink-title);
+  --muted: var(--paper-raised);
+  --muted-foreground: var(--ink-muted);
+  --accent: var(--cobalt-soft);
+  --accent-foreground: var(--ink-title);
+  --destructive: var(--danger);
+  --border: var(--rule);
+  /* Control borders: 4.21:1 on paper-raised, 3.97:1 on paper (WCAG 1.4.11 needs 3:1).
+     Hairlines keep --border on the lighter --rule. */
+  --input: #7F7768;
+  --ring: var(--cobalt);
+
+  --sidebar: var(--paper-raised);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--cobalt);
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: var(--cobalt-soft);
+  --sidebar-accent-foreground: var(--cobalt);
+  --sidebar-border: var(--rule);
+  --sidebar-ring: var(--cobalt);
+}
+
+@layer base {
+  /* Tailwind CSS preflight (MIT, node_modules/tailwindcss/preflight.css), every
+     selector scoped under body.premium-ui so the classic page keeps browser defaults. */
+
+  /*
+    MIT License
+
+    Copyright (c) Tailwind Labs, Inc.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+  */
+  body.premium-ui,
+  body.premium-ui *,
+  body.premium-ui ::after,
+  body.premium-ui ::before,
+  body.premium-ui ::backdrop,
+  body.premium-ui ::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid;
+  }
+
+  body.premium-ui {
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+      "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    font-feature-settings: normal;
+    font-variation-settings: normal;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body.premium-ui hr {
+    height: 0;
+    color: inherit;
+    border-top-width: 1px;
+  }
+
+  body.premium-ui abbr:where([title]) {
+    -webkit-text-decoration: underline dotted;
+    text-decoration: underline dotted;
+  }
+
+  body.premium-ui h1,
+  body.premium-ui h2,
+  body.premium-ui h3,
+  body.premium-ui h4,
+  body.premium-ui h5,
+  body.premium-ui h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  body.premium-ui a {
+    color: inherit;
+    -webkit-text-decoration: inherit;
+    text-decoration: inherit;
+  }
+
+  body.premium-ui b,
+  body.premium-ui strong {
+    font-weight: bolder;
+  }
+
+  body.premium-ui code,
+  body.premium-ui kbd,
+  body.premium-ui samp,
+  body.premium-ui pre {
+    font-family: var(--font-ibm-plex-mono), ui-monospace, SFMono-Regular, Menlo,
+      Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-feature-settings: normal;
+    font-variation-settings: normal;
+    font-size: 1em;
+  }
+
+  body.premium-ui small {
+    font-size: 80%;
+  }
+
+  body.premium-ui sub,
+  body.premium-ui sup {
+    font-size: 75%;
+    line-height: 0;
+    position: relative;
+    vertical-align: baseline;
+  }
+
+  body.premium-ui sub {
+    bottom: -0.25em;
+  }
+
+  body.premium-ui sup {
+    top: -0.5em;
+  }
+
+  body.premium-ui table {
+    text-indent: 0;
+    border-color: inherit;
+    border-collapse: collapse;
+  }
+
+  body.premium-ui :-moz-focusring:where(:not(iframe)) {
+    outline: auto;
+  }
+
+  body.premium-ui progress {
+    vertical-align: baseline;
+  }
+
+  body.premium-ui summary {
+    display: list-item;
+  }
+
+  body.premium-ui ol,
+  body.premium-ui ul,
+  body.premium-ui menu {
+    list-style: none;
+  }
+
+  body.premium-ui img,
+  body.premium-ui svg,
+  body.premium-ui video,
+  body.premium-ui canvas,
+  body.premium-ui audio,
+  body.premium-ui iframe,
+  body.premium-ui embed,
+  body.premium-ui object {
+    display: block;
+    vertical-align: middle;
+  }
+
+  body.premium-ui img,
+  body.premium-ui video {
+    max-width: 100%;
+    height: auto;
+  }
+
+  body.premium-ui button,
+  body.premium-ui input,
+  body.premium-ui select,
+  body.premium-ui optgroup,
+  body.premium-ui textarea,
+  body.premium-ui ::file-selector-button {
+    font: inherit;
+    font-feature-settings: inherit;
+    font-variation-settings: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    border-radius: 0;
+    background-color: transparent;
+    opacity: 1;
+  }
+
+  body.premium-ui :where(select:is([multiple], [size])) optgroup {
+    font-weight: bolder;
+  }
+
+  body.premium-ui :where(select:is([multiple], [size])) optgroup option {
+    padding-inline-start: 20px;
+  }
+
+  body.premium-ui ::file-selector-button {
+    margin-inline-end: 4px;
+  }
+
+  body.premium-ui ::placeholder {
+    opacity: 1;
+  }
+
+  @supports (not (-webkit-appearance: -apple-pay-button)) or
+    (contain-intrinsic-size: 1px) {
+    body.premium-ui ::placeholder {
+      color: color-mix(in oklab, currentcolor 50%, transparent);
+    }
+  }
+
+  body.premium-ui textarea {
+    resize: vertical;
+  }
+
+  body.premium-ui ::-webkit-search-decoration {
+    -webkit-appearance: none;
+  }
+
+  body.premium-ui ::-webkit-date-and-time-value {
+    min-height: 1lh;
+    text-align: inherit;
+  }
+
+  body.premium-ui ::-webkit-datetime-edit {
+    display: inline-flex;
+  }
+
+  body.premium-ui ::-webkit-datetime-edit-fields-wrapper {
+    padding: 0;
+  }
+
+  body.premium-ui ::-webkit-datetime-edit,
+  body.premium-ui ::-webkit-datetime-edit-year-field,
+  body.premium-ui ::-webkit-datetime-edit-month-field,
+  body.premium-ui ::-webkit-datetime-edit-day-field,
+  body.premium-ui ::-webkit-datetime-edit-hour-field,
+  body.premium-ui ::-webkit-datetime-edit-minute-field,
+  body.premium-ui ::-webkit-datetime-edit-second-field,
+  body.premium-ui ::-webkit-datetime-edit-millisecond-field,
+  body.premium-ui ::-webkit-datetime-edit-meridiem-field {
+    padding-block: 0;
+  }
+
+  body.premium-ui ::-webkit-calendar-picker-indicator {
+    line-height: 1;
+  }
+
+  body.premium-ui :-moz-ui-invalid {
+    box-shadow: none;
+  }
+
+  body.premium-ui button,
+  body.premium-ui input:where([type="button"], [type="reset"], [type="submit"]),
+  body.premium-ui ::file-selector-button {
+    appearance: button;
+  }
+
+  body.premium-ui ::-webkit-inner-spin-button,
+  body.premium-ui ::-webkit-outer-spin-button {
+    height: auto;
+  }
+
+  body.premium-ui [hidden]:where(:not([hidden="until-found"])) {
+    display: none !important;
+  }
+
+  /* Token base rules. */
+  html:has(> body.premium-ui) {
+    color-scheme: light;
+  }
+
+  body.premium-ui {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-manrope), ui-sans-serif, system-ui, sans-serif;
+    color-scheme: light;
+  }
+
+  body.premium-ui *,
+  body.premium-ui ::after,
+  body.premium-ui ::before {
+    border-color: var(--rule);
+  }
+
+  body.premium-ui main {
+    overflow-wrap: anywhere;
+  }
+
+  body.premium-ui code {
+    user-select: text;
+  }
+}
+
+/* Unlayered so it beats the primitives' outline-none utility. */
+body.premium-ui :focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 2px;
+}
+
+@layer components {
+  .metadata-scroll {
+    max-height: 20rem;
+    overflow-y: auto;
+  }
+
+  .icon-tile {
+    --tile: var(--cobalt);
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--tile) 12%, transparent);
+    color: var(--tile);
+  }
+
+  .icon-tile svg {
+    width: 1.25rem;
+    height: 1.25rem;
+    stroke-width: 2.25;
+  }
+
+  .icon-tile[data-tint="cobalt"] {
+    --tile: var(--cobalt);
+  }
+
+  .icon-tile[data-tint="teal"] {
+    --tile: #0F766E;
+  }
+
+  .icon-tile[data-tint="amber"] {
+    --tile: #B45309;
+  }
+
+  .icon-tile[data-tint="rose"] {
+    --tile: #BE123C;
+  }
+
+  .icon-tile[data-tint="violet"] {
+    --tile: #6D28D9;
+  }
+
+  .icon-tile[data-tint="green"] {
+    --tile: #15803D;
+  }
+
+  .paper-card {
+    min-width: 0;
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    background: var(--paper-raised);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+  }
+
+  .rule-list > * + * {
+    border-top: 1px solid var(--rule);
+  }
+
+  .mono-box {
+    min-width: 0;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: var(--paper-raised);
+    padding: 0.5rem 0.75rem;
+    color: var(--ink);
+    font-family: var(--font-ibm-plex-mono), ui-monospace, monospace;
+    font-size: 14px;
+    line-height: 22px;
+    overflow-wrap: anywhere;
+    user-select: text;
+  }
+
+  /* Recorded metadata (components/premium/review-metadata.tsx). Its dt and dd
+     carry no attributes, so they are styled from their wrappers. */
+  .metadata-fields {
+    display: grid;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .metadata-fields > div {
+    display: grid;
+    grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
+    gap: 0.75rem;
+    min-width: 0;
+  }
+
+  .metadata-fields > div > dt {
+    color: var(--ink-muted);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 22px;
+    overflow-wrap: anywhere;
+  }
+
+  .metadata-fields > div > dd {
+    min-width: 0;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .metadata-values {
+    display: grid;
+    gap: 0.25rem;
+    padding-left: 1.25rem;
+    list-style: decimal;
+  }
+
+  .scan-findings {
+    display: grid;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .scan-findings > li {
+    container: finding / inline-size;
+    min-width: 0;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: var(--paper-raised);
+    padding: 0.625rem 0.75rem;
+  }
+
+  /* A narrow finding (a version-history cell) stacks each label above its value. */
+  @container finding (max-width: 20rem) {
+    .metadata-fields > div {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+    }
+  }
+
+  .metadata-disclosure > summary {
+    width: fit-content;
+    border-radius: 4px;
+    color: var(--cobalt);
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .metadata-disclosure > summary:hover {
+    color: var(--cobalt-hover);
+  }
+
+  .metadata-disclosure > .metadata-scroll {
+    margin-top: 0.5rem;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    padding-block: 0.25rem 0.5rem;
+    padding-right: 0.25rem;
+  }
+
+  .metadata-disclosure > .metadata-scroll > .metadata-fields {
+    margin-top: 0.5rem;
+  }
+
+  /* Quality scores: the dl itself is a row of large recorded values. */
+  .quality-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .quality-fields > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    background: var(--paper-raised);
+    padding: 0.75rem 1rem;
+  }
+
+  .quality-fields > div > dt {
+    color: var(--ink-muted);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 18px;
+  }
+
+  .quality-fields > div > dd {
+    min-width: 0;
+    color: var(--ink-title);
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 26px;
+    overflow-wrap: anywhere;
+  }
+
+  .quality-fields > .metadata-number > dd {
+    font-size: 36px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    line-height: 44px;
+  }
+
+  .quality-fields > .metadata-text {
+    grid-column: span 2;
+  }
+
+  .quality-fields > .metadata-date {
+    grid-column: 1 / -1;
+  }
+
+  .quality-fields > .metadata-date > dd {
+    color: var(--ink);
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 24px;
+  }
+}

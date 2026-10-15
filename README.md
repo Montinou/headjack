@@ -1,26 +1,47 @@
-# Headjack
+<p align="center">
+  <img src="public/brand/mark.svg" alt="The Headjack mark: three bars" width="64">
+</p>
 
-Headjack is a personal vault for agent skills. You review a skill once, keep it in your own catalog, and then find it by
-meaning and install it only when a task needs it, in Claude Code, Codex, Grok, Gemini CLI, Cursor and other agent
-harnesses. Keeping skills in the vault instead of loaded everywhere keeps each session's context small.
+<h1 align="center">Headjack</h1>
 
-This repository is the client: the `headjack` command line tool, the Claude Code plugin that wraps it, and the
-`skill-finder` skill that teaches an agent to use it. It has no npm dependencies.
+<p align="center">
+  A private vault for agent skills: review a skill once, find it by meaning, install it only when a task needs it.
+</p>
 
-## Two modes
+![An illustration of a knowledge archive: two panes of blue glass, one etched with waves and one with a shelved cube, standing on stacked blue glass slabs in soft light](public/images/headjack/knowledge-archive-v1.webp)
 
-The same CLI runs both.
+Headjack keeps your agent skills and plugins in one catalog of your own instead of loading them everywhere. You review a
+skill once and store it; an agent then finds it by meaning and installs it into Claude Code, Codex, Grok, Gemini CLI,
+Cursor or another agent harness only when a task needs it. Keeping skills in the vault keeps each session's context small.
 
-- **Local mode** keeps the vault in a SQLite file on your machine (`~/.headjack/vault.db`) and needs no server, no account
-  and no network for search. It is the default when `HEADJACK_URL` is unset, and `HEADJACK_MODE=local|remote` overrides.
-  It needs **Node 22.16 or later, or Node 24 or later**, because the SQLite bundled in earlier releases lacks the
-  full-text index it relies on; the CLI checks this and says so when it is not met. Search is keyword search over each
-  skill's name, description, tags and body. Local mode is single-user, one vault per machine.
-- **Hosted mode** talks to a Headjack server you have access to. It needs only Node 20.9 or later and never loads SQLite.
+It has three parts:
+
+- **The `headjack` CLI**, which searches the vault and links skills into each harness's skills directory, scoped to a
+  project or a session when you ask. The `skill-finder` skill teaches an agent to use it. It has no npm dependencies.
+- **A local MCP server**, `headjack mcp`, for agents that search the vault over the Model Context Protocol, without a
+  shell (see [`docs/mcp.md`](docs/mcp.md)).
+- **A hosted instance**, invite-only: a web app, a REST API and a read-only MCP route on top of the same catalog (see
+  the hosted section [below](#hosted-invite-only)).
+
+The CLI runs in two modes. **Local mode** keeps the vault in a SQLite file on your machine (`~/.headjack/vault.db`) and
+needs no server, no account and no network for search; it is the default when `HEADJACK_URL` is unset, and
+`HEADJACK_MODE=local|remote` overrides. It needs **Node 22.16 or later, or Node 24 or later**, because the SQLite bundled in
+earlier releases lacks the full-text index it relies on; the CLI checks this and says so when it is not met. Search is
+keyword search over each skill's name, description, tags and body, and local mode is single-user, one vault per machine.
+**Hosted mode** talks to the invite-only instance and needs only Node 20.9 or later.
 
 ## Quickstart: local
 
-The vault lives on your machine; nothing is uploaded anywhere. You need Node 22.16 or later (or Node 24+).
+The vault lives on your machine; nothing is uploaded anywhere. You need Node 22.16 or later (or Node 24+). The loop is three
+commands:
+
+```sh
+headjack search "render a video with remotion"     # find a skill
+headjack add remotion-render --to claude           # link it into a harness, only when the task needs it
+headjack mcp                                       # or let an agent search and get the install command over MCP
+```
+
+To get there:
 
 1. **Get the code and load the plugin.** Clone this repository, then load it as a plugin for a Claude Code session
    (Claude Code 2.1.275 or later):
@@ -31,12 +52,12 @@ The vault lives on your machine; nothing is uploaded anywhere. You need Node 22.
    ```
 
    While the plugin is enabled, its `bin/` is on the `PATH` of the shell Claude Code's Bash tool runs, so the agent can
-   run `headjack` by name, and the `skill-finder` skill teaches it to. The vault itself stays in `~/.headjack`, outside the
-   plugin, so a plugin update never touches it.
+   run `headjack` by name, and the `skill-finder` skill teaches it to. The plugin also registers the local MCP server. The
+   vault itself stays in `~/.headjack`, outside the plugin, so a plugin update never touches it.
 2. **Let your terminal find `headjack` too.** A plugin's `bin/` is not on the `PATH` of your own terminal. Skip this step
-   only if you never type `headjack` yourself; the next steps are commands you run in your own terminal, and
-   `import --interactive` asks questions an agent's shell cannot answer. Link the launcher once from your clone. Do not
-   link into the plugin's own directory: that link dangles after a plugin update.
+   only if you never type `headjack` yourself (the agent runs it from the plugin's `bin/`); the next steps are commands you
+   run in your own terminal, and `import --interactive` asks you questions an agent's shell cannot answer. Link the
+   launcher once from your clone. Do not link into the plugin's own directory: that link dangles after a plugin update.
 
    ```sh
    mkdir -p ~/.local/bin
@@ -65,109 +86,77 @@ The vault lives on your machine; nothing is uploaded anywhere. You need Node 22.
    headjack updates                       # upstream changes waiting for review
    ```
 
-`headjack whoami` prints the vault path and how many skills it holds. `HEADJACK_HOME` moves the state directory, and
+`headjack whoami` prints the vault path and how many skills it holds. `HEADJACK_MODE=local` stays local even when
+`HEADJACK_URL` is set, and `HEADJACK_MODE=remote` insists on hosted mode. `HEADJACK_HOME` moves the state directory, and
 `HEADJACK_UPDATE_TTL_HOURS` sets how long an upstream check stays fresh (6 hours by default; 0 checks every time). The
 `vault.db` file is mode 600 in a directory of mode 700.
 
-## Quickstart: hosted
+## The web app
 
-Hosted mode points the same CLI at a Headjack server that you have access to. This repository contains only the client,
-so this section covers configuring the CLI, not the server (what a server must provide is in
-[`docs/server-contract.md`](docs/server-contract.md)). You need the server's address and a way to sign in to it.
-Hosted mode alone runs on Node 20.9 or later.
+The hosted instance shows the same catalog in a web app. These screenshots come from the fixture server with made-up
+skills, not from anyone's vault.
 
-1. **Link the launcher** as in step 2 of Quickstart: local, so that `headjack` is on your `PATH`.
-2. **Tell the CLI where the server is.** `HEADJACK_URL` must be `https`, or `http` on a loopback host, with no
-   credentials, query or fragment (the CLI refuses such a URL without echoing it). It is normalized: host in lowercase,
-   no default port, no trailing slash.
+Local mode has no web interface yet: the CLI and the local MCP server are how you use it. A local web interface over the
+SQLite vault (`headjack ui`, single-user, no sign-in) is planned.
 
-   ```sh
-   export HEADJACK_URL="https://headjack.example.invalid"
-   ```
+![The library: a grid of skill cards, each with its description, review state and tags, with search and filters above](docs/images/library.webp)
 
-   Setting it switches the CLI to hosted mode. `HEADJACK_MODE=local` keeps local mode even when `HEADJACK_URL` is set, and
-   `HEADJACK_MODE=remote` insists on hosted mode.
-3. **Sign in.** When the server has browser login enabled:
+![A skill's page: its provenance, the current review and an install command next to a download button](docs/images/skill-detail.webp)
 
-   ```sh
-   headjack login            # opens the browser; the URL is always printed too
-   headjack whoami           # credential kind and source, expiry, and whether the server accepts it
-   headjack logout           # revokes the login at the server and deletes the saved credential
-   ```
+![The getting-started page: numbered steps for setting up the CLI, finding a skill and installing it locally](docs/images/getting-started.webp)
 
-   `login` listens on `127.0.0.1` on the first free port of 53437, 53438 and 53439 for the browser's redirect, and gives up
-   after 5 minutes. It saves the login in `<state dir>/token` (mode 600), and the CLI refreshes it on its own; if the
-   refresh is refused it says `session expired: run headjack login`. An existing login is kept unless you pass `--force`.
-   A login belongs to one server: with a different `HEADJACK_URL` the CLI asks you to log in again. If the server has not
-   enabled browser login, `login` says so and exits 2.
-4. **Or use an API token.** For a machine without a browser, ask the server's operator for a token with the `skills:read`
-   scope (and `skills:write` for `review`). The CLI reads it from the `HEADJACK_TOKEN` environment variable first, then
-   from the token file in the state directory, which must not be readable by others. Run this on its own, not pasted
-   together with other lines: its hidden prompt would take the next pasted line as the token in a shell without bracketed
-   paste.
+![The library at phone width: the same cards in a single column under the search box](docs/images/mobile.webp)
 
-   ```sh
-   mkdir -p ~/.headjack && chmod 700 ~/.headjack
-   (umask 077; printf 'Token: '; read -rs t; echo; printf '%s' "$t" > ~/.headjack/token) && chmod 600 ~/.headjack/token
-   ```
+## Hosted (invite-only)
 
-   `HEADJACK_TOKEN` takes precedence over a saved login, so `login` warns when it is set. `logout` ignores it. When the
-   token expires the CLI gets 401: ask the operator for a new one. Neither `login` nor `whoami` ever prints a token.
-5. **Verify.**
+The hosted instance is a web app, a REST API and a read-only MCP route, backed by Postgres with hybrid search (full-text
+plus vector embeddings, fused with reciprocal rank fusion). Access is by invitation. The instance address and the
+`headjack-mcp` client id come with the invitation: they are not published here, and this repository offers no way to run an
+instance of your own; the maintainers' operating notes are in [`docs/operations.md`](docs/operations.md).
 
-   ```sh
-   headjack search "something you expect to find"
-   headjack harness detect
-   ```
+With an invitation, point the CLI at the instance. `HEADJACK_URL` must be `https`, or `http` on a loopback host, with no
+credentials, query or fragment (the CLI refuses such a URL without echoing it). It is normalized: host in lowercase, no
+default port, no trailing slash. It must also equal the server's canonical origin: another domain that serves the same
+deployment is refused with "describes a different resource".
 
-   A `403` with "missing required skill scope" means the token's scopes are wrong. `harness detect` records which agent
-   harnesses this machine has.
-
-## MCP server
-
-`headjack mcp` serves the Model Context Protocol over stdio, so an agent can search the vault, read a skill and ask for its
-install command without a shell. It has four read-only tools: `search_skills`, `get_skill`, `list_my_skills` and
-`install_command`. It changes nothing, and it works on whatever the CLI is set up for: the local vault, or a hosted server
-when `HEADJACK_URL` is set.
-
-The plugin declares the server inline in `.claude-plugin/plugin.json`, so loading the plugin in Claude Code is all it takes.
-To register it in another MCP client, give the client a stdio server whose command is `bin/headjack` and whose argument is
-`mcp`; a client that starts servers with a reduced environment needs an `env` block with `HEADJACK_URL` (hosted) and a
-`PATH` that holds `node`. [`docs/mcp.md`](docs/mcp.md) has the example, the tool schemas, the limits, the error codes and the
-protocol details. Skill text that a tool returns is untrusted source text, never instructions.
-
-### Switching to a hosted server
-
-Both the CLI and the MCP server follow `HEADJACK_URL`: unset, they use the local vault; set, they use that server. To switch,
-set `HEADJACK_URL` where the CLI and the MCP client can see it (for an MCP client with a reduced environment, in its `env`
-block), then run `headjack login` or set `HEADJACK_TOKEN` as in Quickstart: hosted, and restart the MCP client. The MCP server
-reads the credential on every call, so a login made later takes effect with no restart; until then its tools answer
-`unauthenticated`. The local vault is not copied anywhere: `HEADJACK_MODE=local` brings it back at any time. A server must
-meet [`docs/server-contract.md`](docs/server-contract.md), which lists every route, header and field the client relies on and
-the optional browser login; that contract is what a compatible server implements.
-
-## State directory and `config.json`
-
-The CLI keeps its state in `~/.headjack`, or in `HEADJACK_HOME` when set (an absolute path, or one starting with `~/`):
-the vault (local mode), the token file, `state.json` (what is installed where), the local copies of installed skills,
-`harnesses.json`, import plans and trim backups.
-
-An optional `config.json` in that directory holds two lists of strings; unknown keys are ignored:
-
-```json
-{
-  "excludedRoots": ["~/work"],
-  "corePlugins": ["example-plugin@example-marketplace"]
-}
+```sh
+export HEADJACK_URL="https://headjack.example.invalid"   # the address from your invitation
+headjack login            # opens the browser; the URL is always printed too
+headjack whoami           # credential kind and source, email and expiry, and whether the server accepts it
+headjack logout           # revokes the login at the issuer and deletes the saved credential
 ```
 
-- **`excludedRoots`**: the excluded roots, directories the CLI never imports from, reviews from or installs into (for
-  example a work folder whose skills must not leave the machine). Each entry is absolute or starts with `~/`.
-  `HEADJACK_EXCLUDED_ROOTS` (entries separated by the platform path delimiter) replaces the list when set. Write it
-  before you import or install anything.
-- **`corePlugins`**: Claude Code plugins (`<plugin>@<marketplace>`) that stay enabled when `import --trim` disables the
-  rest; `--keep a,b` adds to it for one run. Without it and without `--keep`, a trim leaves plugins as they are; with
-  `--keep` alone, a trim disables every plugin outside the `--keep` list (`headjack restore` undoes it).
+`login` listens on `127.0.0.1` on the first free port of 53437, 53438 and 53439 for the browser's redirect, and gives up
+after 5 minutes. It saves the login in `<state dir>/token` (mode 600), and the CLI refreshes it on its own; if the refresh
+is refused it says `session expired: run headjack login`. An existing login is kept unless you pass `--force`. A login
+belongs to one server: with a different `HEADJACK_URL` the CLI asks you to log in again. If the server has not enabled
+browser login, `login` says so and exits 2. `logout` always revokes a login; with an API key in the token file it prints
+that API keys are revoked where they were issued and leaves the file in place (exit 2). Neither command prints a token.
+
+For a machine without a browser, ask the instance's maintainers for an API key with the `skills:read` scope (and
+`skills:write` for `review`). The CLI reads it from the `HEADJACK_TOKEN` environment variable first, then from the token
+file, which must not be readable by others. `HEADJACK_TOKEN` takes precedence over a saved login, and `login` warns when it
+is set. Run this on its own, not pasted together with other lines: its hidden prompt would take the next pasted line as the
+token in a shell without bracketed paste.
+
+```sh
+mkdir -p ~/.headjack && chmod 700 ~/.headjack
+(umask 077; printf 'Token: '; read -rs t; echo; printf '%s' "$t" > ~/.headjack/token) && chmod 600 ~/.headjack/token
+```
+
+**Connect an agent over the hosted MCP route.** The read-only route (`search_skills`, `get_skill`, `list_my_skills`,
+`install_command`) is at `/mcp` on the instance. In Claude Code, register it with the `headjack-mcp` client id from your
+invitation and sign in with `claude mcp login headjack`:
+
+```sh
+claude mcp add --transport http --scope user \
+  --client-id "<the headjack-mcp client id from your invitation>" --callback-port 53436 \
+  headjack "$HEADJACK_URL/mcp"
+```
+
+`docs/mcp.md` has the scopes, the callback ports and the details of both MCP routes. The CLI and the local MCP server
+follow `HEADJACK_URL`: unset, they use the local vault; set, they use the instance. Your local vault is never copied
+anywhere; `HEADJACK_MODE=local` brings it back at any time.
 
 ## Usage
 
@@ -184,9 +173,9 @@ headjack verify                                         # check local copies and
 ```
 
 Harnesses: `claude`, `codex` and `grok` (the default for `--to`) and 24 more (`gemini`, `cursor`, `windsurf`, `cline`, and
-others; `headjack harness detect` finds the ones on your machine). `--to all` uses the detected ones. Only `claude`,
-`codex` and `grok` accept `--project`. `--session` marks an install so that `cleanup` removes it; permanent installs are
-never touched by `cleanup`.
+others; the table is in `lib/harness-catalog.mjs`, and `headjack harness detect` finds the ones on your machine).
+`--to all` uses the detected ones. Only `claude`, `codex` and `grok` accept `--project`. `--session` marks an install so
+that `cleanup` removes it; permanent installs are never touched by `cleanup`.
 
 To move an existing setup into the vault:
 
@@ -201,24 +190,67 @@ headjack restore ~/.headjack/backup-<date>   # undo a trim
 A trim removes a local copy only when it is the imported one or byte-identical to it, never through a symlinked harness
 directory, and touches Claude Code plugins only when `claude` is among the trimmed harnesses.
 
-Stored `SKILL.md` text is source material, not instructions. The CLI scans sources for secrets and binaries during
-`review`, and agents are told to ask before installing anything.
+The surface that other tools may rely on (JSON shapes, exit codes, environment inputs) is pinned in
+[`docs/capability-contract.md`](docs/capability-contract.md).
+
+### State directory and `config.json`
+
+The CLI keeps its state in `~/.headjack`, or in `HEADJACK_HOME` when set (an absolute path, or one starting with `~/`):
+the vault (local mode), the token file, `state.json` (what is installed where), the local copies of installed skills,
+`harnesses.json`, import plans and trim backups.
+
+An optional `config.json` in that directory holds two lists of strings; unknown keys are ignored:
+
+```json
+{
+  "excludedRoots": ["~/work"],
+  "corePlugins": ["example-plugin@example-marketplace"]
+}
+```
+
+- **`excludedRoots`**: directories the CLI never imports from, reviews from or installs into (for example a work
+  folder whose skills must not leave the machine). Each entry is absolute or starts with `~/`.
+  `HEADJACK_EXCLUDED_ROOTS` (entries separated by the platform path delimiter) replaces the list when set. Write it
+  before you import or install anything.
+- **`corePlugins`**: Claude Code plugins (`<plugin>@<marketplace>`) that stay enabled when `import --trim` disables
+  the rest; `--keep a,b` adds to it for one run. Without it and without `--keep`, a trim leaves plugins as they are;
+  with `--keep` alone, a trim disables every plugin outside the `--keep` list (`headjack restore` undoes it).
+
+## Security model
+
+- **Untrusted content.** Stored `SKILL.md` text is source material, not instructions. The CLI scans sources for secrets
+  and binaries during `review`, and agents are told to ask before installing anything.
+- **Local by default.** Local mode keeps the vault in a mode-600 file in a mode-700 directory and makes no network call
+  for search.
+- **Per-owner isolation on the instance.** Every table that holds catalog data has Postgres row-level security keyed to an
+  owner id, and the app connects as a role without `BYPASSRLS`, so the policies always apply. Clerk sessions and
+  resource-bound OAuth grants identify users; the MCP route accepts only grants with `skills:read`.
+
+Report vulnerabilities as described in [`SECURITY.md`](SECURITY.md).
+
+## Documentation
+
+- [`docs/mcp.md`](docs/mcp.md): the local MCP server and the hosted MCP route.
+- [`docs/server-contract.md`](docs/server-contract.md): the routes, headers and fields the CLI relies on.
+- [`docs/capability-contract.md`](docs/capability-contract.md): the CLI surface other tools may rely on.
+- [`docs/operations.md`](docs/operations.md): operating the Headjack instance (for its maintainers).
+- [`docs/migrations.md`](docs/migrations.md): the rules for database migrations.
 
 ## Development
 
-There is nothing to install: the CLI and its tests use only Node.js.
-
 ```sh
-npm test      # node --test "test/unit/**/*.test.mjs"
+npm ci
+npm test                 # unit and database tests (PGlite with pgvector, no network)
+npm run build            # next build, including the type check
+npm run db:generate      # a new migration from db/schema.ts (review and commit it)
+npm run db:check         # drizzle/ snapshots are consistent
+npm run auth:schema      # regenerate db/auth-schema.ts (Better Auth tables in the auth schema)
+npm run test:browser     # Playwright against a local fixture server
 ```
 
-The test suite is verified on Node 24, the version CI runs. Some tests rely on Node 24's test runner keeping an idle
-event loop alive and are cancelled by the runner on Node 22, even though the CLI itself runs there in local mode.
-
-## Contributing and security
-
-Most files in this repository are exported from the maintainer's own repository, so read [`CONTRIBUTING.md`](CONTRIBUTING.md)
-before you open a pull request. Report vulnerabilities as described in [`SECURITY.md`](SECURITY.md).
+`db/schema.ts` is the single source of the schema; `drizzle/` holds the generated migrations and the hand-written ones
+(`0001_app_foundation`, `0004_rls`). Every migration must stay backward compatible with the deployment before it. The
+suite is verified on Node 24, the version CI runs. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before you open a pull request.
 
 ## License
 

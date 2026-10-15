@@ -1,0 +1,2 @@
+#!/bin/sh
+sh "$(git rev-parse --show-toplevel)"'/.githooks/progress-store-post-commit.sh' || true

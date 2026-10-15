@@ -3,9 +3,65 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.16"
+    "node": ">=20.9"
   },
   "scripts": {
-    "test": "node --test \"test/unit/**/*.test.mjs\""
+    "test": "node --test \"test/unit/**/*.test.mjs\" \"test/db/**/*.test.mjs\"",
+    "test:unit": "node --test \"test/unit/**/*.test.mjs\"",
+    "test:db": "node --test \"test/db/**/*.test.mjs\"",
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
+    "search-eval": "node scripts/search-eval.mjs",
+    "db:baseline": "node scripts/db-baseline.mjs",
+    "db:migrate": "drizzle-kit migrate",
+    "auth:schema": "auth generate --config db/auth-generate.config.ts --adapter drizzle --dialect postgresql --output .auth-schema.generated.ts -y && node scripts/auth-schema.mjs .auth-schema.generated.ts db/auth-schema.ts && node -e \"require('node:fs').rmSync('.auth-schema.generated.ts')\"",
+    "dev": "next dev",
+    "build": "next build",
+    "vercel-build": "node scripts/vercel-build.mjs",
+    "start": "next start",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "@better-auth/api-key": "1.7.5",
+    "@better-auth/cimd": "1.7.5",
+    "@better-auth/drizzle-adapter": "1.7.5",
+    "@better-auth/mcp": "1.7.5",
+    "@better-auth/oauth-provider": "1.7.5",
+    "@clerk/backend": "^3.23.0",
+    "@clerk/nextjs": "^7.9.11",
+    "@flags-sdk/vercel": "^1.4.10",
+    "@modelcontextprotocol/server": "2.3.1",
+    "@neondatabase/serverless": "^1.1.0",
+    "ai": "^7.0.0",
+    "better-auth": "1.7.5",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "drizzle-orm": "0.45.3",
+    "flags": "^4.3.1",
+    "lucide-react": "^1.52.0",
+    "mcp-handler": "2.2.0",
+    "next": "16.3.6",
+    "radix-ui": "^1.7.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "^3.7.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@electric-sql/pglite": "0.5.8",
+    "@electric-sql/pglite-pgvector": "0.0.9",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "24.13.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vercel/config": "^0.7.1",
+    "auth": "1.7.5",
+    "drizzle-kit": "0.31.11",
+    "postcss": "^8.5.29",
+    "tailwindcss": "^4.3.3",
+    "typescript": "5.9.3"
   }
 }
