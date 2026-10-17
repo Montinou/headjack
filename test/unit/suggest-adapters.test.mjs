@@ -275,3 +275,22 @@ localTest('damage found during the search is a UserError with the damaged-vault 
   assert.ok(err instanceof UserError);
   assert.equal(err.message, `vault ${vaultFile(dir)} is damaged; run headjack verify`);
 });
+
+localTest('localSearch matches a Spanish prompt through example requests and, failing that, the glossary', async () => {
+  const { DatabaseSync } = await runtimeCheck();
+  const dir = await tempDir('sv-local-adapter-');
+  const db = openVault({ dir, DatabaseSync });
+  const repo = createSqliteRepo(db);
+  await repo.publish(skill('deploy-cron', 'Schedule deploy cron jobs', 'Runs a deploy on a cron schedule.'));
+  const gardening = await repo.publish(skill('gardening', 'Grow tomatoes', 'Water daily.'));
+  await repo.setSpanish(gardening.skillId, gardening.versionId, 'cultivar tomates en casa', 1);
+  db.close();
+  // Through the Spanish example requests of an enriched skill.
+  const es = await localSearch({ dir, query: 'quiero cultivar tomates', migrate: false });
+  assert.deepEqual(es.candidates.map((c) => [c.slug, c.fts_table, c.table_rank]), [['gardening', 'es', 1]]);
+  // Through the glossary, for a skill with no Spanish text of its own.
+  const gloss = await localSearch({ dir, query: 'quiero desplegar un proceso', migrate: false });
+  assert.deepEqual(gloss.candidates.map((c) => [c.slug, c.fts_table]), [['deploy-cron', 'en-gloss']]);
+  // An English prompt never reaches the glossary table.
+  assert.deepEqual((await localSearch({ dir, query: 'desplegar', migrate: false })).candidates, []);
+});

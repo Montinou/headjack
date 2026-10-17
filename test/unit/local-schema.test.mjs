@@ -9,6 +9,8 @@ import { runtimeCheck } from '../../lib/local/runtime.mjs';
 import { MIGRATIONS, isBusy, openVault, openVaultReadOnly, vaultInfo } from '../../lib/local/schema.mjs';
 
 const { DatabaseSync } = (await localSupported) ? await runtimeCheck() : {};
+// Migrations applied before the Spanish ones (queries_es_text, enrichment_v, skill_docs_es).
+const PRE_SPANISH = 6;
 const mode = async (p) => (await stat(p)).mode & 0o777;
 
 localTest('openVault creates vault.db mode 600 in a mode 700 directory, tightening an existing 755 directory', async () => {
@@ -147,4 +149,40 @@ localTest('openVaultReadOnly returns busy within 400 ms while another connection
   const elapsed = performance.now() - started;
   assert.deepEqual(result, { ok: false, reason: 'busy' });
   assert.ok(elapsed < 400, `took ${elapsed} ms`);
+});
+
+localTest('a vault at the previous user_version migrates on openVault, keeps its rows and gains the Spanish columns', async () => {
+  const dir = await tempDir('sv-vault-');
+  const before = PRE_SPANISH;
+  const raw = new DatabaseSync(path.join(dir, 'vault.db'));
+  for (const statement of MIGRATIONS.slice(0, before)) raw.exec(statement);
+  raw.exec(`PRAGMA user_version = ${before}`);
+  raw.exec("insert into skills (slug, name, description, kind) values ('old', 'Old', 'An old skill', 'skill')");
+  raw.exec("insert into skill_docs (rowid, name, description, tags, body) values (1, 'Old', 'An old skill', '', 'body')");
+  raw.close();
+
+  const db = openVault({ dir, DatabaseSync });
+  try {
+    assert.deepEqual(vaultInfo(db), { schemaVersion: MIGRATIONS.length, skills: 1 });
+    const row = { ...db.prepare("select slug, queries_es_text, enrichment_v from skills where slug = 'old'").get() };
+    assert.deepEqual(row, { slug: 'old', queries_es_text: '', enrichment_v: null });
+    assert.equal(db.prepare('select count(*) as n from skill_docs').get().n, 1);
+    assert.equal(db.prepare('select count(*) as n from skill_docs_es').get().n, 0);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('an old vault opens read-only as schema until a write command migrates it, then it opens', async () => {
+  const dir = await tempDir('sv-vault-');
+  const before = PRE_SPANISH;
+  const raw = new DatabaseSync(path.join(dir, 'vault.db'));
+  for (const statement of MIGRATIONS.slice(0, before)) raw.exec(statement);
+  raw.exec(`PRAGMA user_version = ${before}`);
+  raw.close();
+  assert.deepEqual(openVaultReadOnly({ dir, DatabaseSync }), { ok: false, reason: 'schema' });
+  openVault({ dir, DatabaseSync }).close();
+  const opened = openVaultReadOnly({ dir, DatabaseSync });
+  assert.equal(opened.ok, true);
+  opened.db.close();
 });
