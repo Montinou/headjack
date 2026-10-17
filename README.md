@@ -158,6 +158,18 @@ claude mcp add --transport http --scope user \
 follow `HEADJACK_URL`: unset, they use the local vault; set, they use the instance. Your local vault is never copied
 anywhere; `HEADJACK_MODE=local` brings it back at any time.
 
+**Copy hosted skills into the local vault.** `headjack pull` copies your approved hosted skills into the local vault. It
+needs `HEADJACK_URL` and a hosted credential, in either mode. A skill's archive is stored only when its content hash matches
+the hosted version; its review notes and Spanish example requests come along. A skill you changed in the local vault after
+pulling it (or that was there before any pull) is never overwritten: while hosted has a newer version it is skipped with
+`run headjack pull --replace <slug> to take hosted`. Pulled skills follow hosted: `headjack updates` does not track their
+upstream, so run `headjack pull` again to refresh them. It exits 1 when any skill failed.
+
+```sh
+headjack pull                     # approved standalone skills; a re-run copies only what changed
+headjack pull --replace my-skill  # take the hosted version over a local edit
+```
+
 ## Usage
 
 ```sh

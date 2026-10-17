@@ -40,6 +40,7 @@ const USAGE = `headjack — personal skill vault
   headjack import --dry-run | import [--interactive]
   headjack import --trim [--keep a,b] [--only-harness <id,…>] [--dry-run]
   headjack enrich [--stale] [<slug>…]
+  headjack pull [--replace <slug>]…
   headjack verify
   headjack restore <backup-dir>
   headjack gc
@@ -56,6 +57,11 @@ enrich (local mode only) writes Spanish example requests for vault skills so Spa
 Vercel AI Gateway, after a secret scan of exactly that text; never your prompts. Without slugs it takes the skills that have no
 Spanish text yet, --stale those enriched by an older prompt too, and <slug>… exactly those skills. Hosted skills are enriched by
 the server. With enrich.enabled, import also enriches the skills it publishes.
+
+pull copies your approved hosted skills into the local vault (needs HEADJACK_URL and a hosted credential, whatever the mode).
+A skill changed in the local vault since it was pulled (or there before any pull) is never overwritten: it is skipped while
+hosted has a newer version, until --replace <slug> takes hosted. Pulled skills follow hosted: updates does not track their
+upstream, so run pull again to refresh them. Exits 1 when any skill failed.
 
 Harness ids: claude, codex, grok and any that "harness detect" finds (gemini, cursor, windsurf, …);
 "all" = every detected one. --session marks the install so that "cleanup" removes it.
@@ -105,6 +111,7 @@ const OPTIONS = {
   expect: { type: 'string' },
   lang: { type: 'string' },
   stale: { type: 'boolean' },
+  replace: { type: 'string', multiple: true },
 };
 
 const SOURCES = ['suggest', 'plan', 'manual'];
@@ -459,6 +466,22 @@ async function main(argv) {
         const config = await loadSuggestConfig(ctx.dir);
         await connect();
         return enrichCommand({ repo: ctx.repo, slugs: args, stale: Boolean(o.stale), config, env: process.env, dir: ctx.dir, log: ctx.log });
+      }
+      case 'pull': {
+        if (args.length) throw new UserError('usage: headjack pull [--replace <slug>]…');
+        const [{ SLUG_RE }, { pull }, { createApi }, { loadRemote }] = await Promise.all([
+          import('../lib/handlers.mjs'), import('./pull.mjs'), import('./api.mjs'), import('./config.mjs'),
+        ]);
+        const replace = new Set(o.replace ?? []);
+        for (const slug of replace) if (!SLUG_RE.test(slug)) throw new UserError('--replace expects a slug (letters, digits, . _ @ : -)');
+        // Hosted from HEADJACK_URL and the credential whatever the mode; the local vault is opened directly.
+        const hosted = createApi({ ...(await loadRemote({ env: process.env, dir: ctx.dir })), dir: ctx.dir, env: process.env });
+        const { createLocalApi } = await import('../lib/local/api.mjs');
+        const vault = await local(() => createLocalApi({ dir: ctx.dir, env: process.env }));
+        ctx.closeApi = vault.close;
+        const r = await pull({ hosted, local: vault, replace, log: ctx.log });
+        console.log(`pulled: ${r.pulled.length}, unchanged: ${r.unchanged.length}, skipped: ${r.skipped.length}, failed: ${r.failed.length}`);
+        return r.failed.length ? 1 : 0;
       }
       case 'verify': {
         const problems = await verify(ctx);
