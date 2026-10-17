@@ -66,16 +66,16 @@ export function createApi({ url, credential, dir, fetchImpl = fetch, env = proce
     current = await freshCredential({ dir, credential: current, rejectedToken }, { fetchImpl });
     return current.accessToken;
   }
+  // A per-request header set to null is removed: how one request drops a header from `common`.
   function init(token, extra = {}) {
-    return {
-      ...extra,
-      headers: {
-        ...common,
-        ...headers,
-        authorization: `Bearer ${token}`,
-        ...(extra.headers ?? {}),
-      },
+    const merged = {
+      ...common,
+      ...headers,
+      authorization: `Bearer ${token}`,
+      ...(extra.headers ?? {}),
     };
+    for (const key of Object.keys(merged)) if (merged[key] === null) delete merged[key];
+    return { ...extra, headers: merged };
   }
   async function send(pathname, extra, token) {
     try {
@@ -113,6 +113,31 @@ export function createApi({ url, credential, dir, fetchImpl = fetch, env = proce
       if (kind) params.set('kind', kind);
       if (tags.length) params.set('tag', tags.join(','));
       return (await json(await call(`/api/search?${params}`, { headers: { 'x-headjack-purpose': purpose } }))).results;
+    },
+    // POST /api/search for the suggestion pipeline: `q` travels in the JSON body, never in the URL (a prompt must not land in
+    // access logs). `sessionId` is authoritative: valid, it is sent; invalid, it is dropped along with the ambient
+    // CLAUDE_CODE_SESSION_ID header. `signal` aborts the request and also settles this call at once, even while a token refresh
+    // (which takes no signal) is still running.
+    async searchPost(q, k = 5, { purpose = 'manual', sessionId, signal } = {}) {
+      signal?.throwIfAborted();
+      const headers = { 'content-type': 'application/json', 'x-headjack-purpose': purpose };
+      if (sessionId !== undefined) headers['x-headjack-session'] = typeof sessionId === 'string' && SESSION_ID.test(sessionId) ? sessionId : null;
+      const request = (async () => {
+        const res = await call('/api/search', { method: 'POST', headers, body: JSON.stringify({ q, k }), signal });
+        return (await json(res)).results;
+      })();
+      if (!signal) return request;
+      request.catch(() => {}); // the race below may settle first; the late outcome is not an unhandled rejection
+      let onAbort;
+      const aborted = new Promise((_, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      try {
+        return await Promise.race([request, aborted]);
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
     },
     // The catalog page of GET /api/skills (the handler caps `limit` at 100). `tag`: one tag or a list, all required.
     async list({ kind, tag, limit = 50, offset = 0 } = {}) {

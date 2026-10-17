@@ -478,3 +478,32 @@ test('guessLang: stopwords and diacritics', () => {
   assert.equal(guessLang('kubernetes'), 'en');
   assert.equal(guessLang(''), 'en');
 });
+
+// ---- skipped searches (an adapter answers { outcome }) ----
+
+test('an adapter skip ends the run with that outcome, never as none', async () => {
+  for (const outcome of ['skipped:no-vault', 'skipped:schema', 'skipped:busy', 'skipped:no-url', 'skipped:no-post']) {
+    const { r, deps } = await run({}, { searchFn: () => ({ outcome }) });
+    assert.equal(r.outcome, outcome);
+    assert.notEqual(r.outcome, 'none');
+    assert.deepEqual(r.suggestions, []);
+    assert.deepEqual(r.candidates, []);
+    assert.equal(r.variant, 'local');
+    assert.deepEqual(deps.calls.added, []);
+  }
+});
+
+test('a skipped hosted search keeps mode hosted and a null variant, or the variant it carries', async () => {
+  const cfg = config({ hosted: true });
+  const bare = await run({ config: cfg }, { searchFn: () => ({ outcome: 'skipped:no-post' }) });
+  assert.equal(bare.r.outcome, 'skipped:no-post');
+  assert.equal(bare.r.mode, 'hosted');
+  assert.equal(bare.r.variant, null);
+  const withVariant = await run({ config: cfg }, { searchFn: () => ({ outcome: 'skipped:no-url', variant: 'v1' }) });
+  assert.equal(withVariant.r.variant, 'v1');
+});
+
+test('an empty candidate list is still none, not a skip', async () => {
+  const { r } = await run({}, { searchFn: () => ({ candidates: [], variant: 'local' }) });
+  assert.equal(r.outcome, 'none');
+});
