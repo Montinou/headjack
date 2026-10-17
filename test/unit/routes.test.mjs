@@ -22,7 +22,8 @@ test('each v1 path has a route handler preserving its v1 method and handler, wit
   for (const [file, method, handler] of V1_ROUTES) {
     const src = await readFile(path.join(ROOT, file), 'utf8');
     const exported = [...src.matchAll(/export\s+(?:async\s+)?function\s+(\w+)/g)].map((m) => m[1]);
-    assert.deepEqual(exported, file === 'app/api/skills/route.ts' ? ['POST', 'GET'] : [method], file);
+    assert.deepEqual(exported, file === 'app/api/skills/route.ts' ? ['POST', 'GET'] : file === 'app/api/search/route.ts' ? ['GET', 'POST'] : [method], file);
+    if (file === 'app/api/search/route.ts') assert.match(src, /export function POST\(req: Request\) \{ return app\(\)\.search\(req\); \}/);
     if (file === 'app/api/skills/route.ts') assert.match(src, /return app\(\)\.listSkills\(req\);/);
     assert.match(src, new RegExp(`return app\\(\\)\\.${handler}\\(req\\);`), file);
     assert.doesNotMatch(src, /export const runtime/, `${file}: Node is the default runtime`);

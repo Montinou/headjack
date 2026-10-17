@@ -67,6 +67,11 @@ localTest('the in-process api publishes, searches, reads, downloads and lists ve
     assert.deepEqual(await api.updates(), []);
     assert.equal(await api.installEvent({ slug: 'zebra-tool', kind: 'skill', source: 'manual' }), undefined);
 
+    const posted = await route(`${URL_BASE}/api/search`, { method: 'POST', body: JSON.stringify({ q: 'zebra' }) });
+    assert.equal(posted.status, 200);
+    assert.deepEqual((await posted.json()).results.map((r) => r.slug), ['zebra-tool']);
+    assert.equal((await route(`${URL_BASE}/api/search`, { method: 'PUT', body: '{}' })).status, 404);
+
     assert.equal((await route(`${URL_BASE}/api/unknown`, {})).status, 404);
     assert.equal((await route(`${URL_BASE}/api/skills/zebra-tool/other`, {})).status, 404);
   } finally {
