@@ -30,6 +30,7 @@ const USAGE = `headjack — personal skill vault
   headjack suggest "<text>" [--json] [--explain] [--session-id <id>]
   headjack suggest --enable [--hosted|--local] | --disable
   headjack suggest --report [--since 7d|12h|30m] [--json]
+  headjack suggest --calibrate [--mode local|hosted] [--json]
   headjack suggest --save --expect <slug|none> [--lang es|en]   (prompt from stdin, or $VISUAL / $EDITOR on a terminal)
   headjack hook prompt|warmup|skill-used   (internal: run by the Claude Code hooks, not by hand)
   headjack list [--active] [--json]
@@ -50,6 +51,9 @@ suggest searches the vault for skills that fit <text> and prints the ones you do
 missing). --enable / --disable turn the prompt hook's suggestions on and off in <state dir>/config.json; --hosted / --local
 pick the search the hook uses. --session-id <id> remembers what was suggested for that session. --report prints, from the
 suggestion log, how many suggestions were taken (hit), left alone (ignored) or beaten by a skill you added or used anyway (missed).
+--calibrate measures the suggestions against <state dir>/suggest/eval.json (rows of { q, slug | null, lang }, at least 20 per
+language including 8 with slug: null): precision, recall and latency per language with their raw counts, and 5-fold
+cross-validated thresholds printed as guidance. --mode picks the search (default: suggest.hosted). It never writes config.json.
 
 enrich (local mode only) writes Spanish example requests for vault skills so Spanish prompts match them. It is opt-in: set
 "enrich": { "enabled": true } in <state dir>/config.json and give an AI Gateway key in AI_GATEWAY_API_KEY or in
@@ -106,6 +110,8 @@ const OPTIONS = {
   hosted: { type: 'boolean' },
   local: { type: 'boolean' },
   report: { type: 'boolean' },
+  calibrate: { type: 'boolean' },
+  mode: { type: 'string' },
   since: { type: 'string' },
   save: { type: 'boolean' },
   expect: { type: 'string' },
@@ -151,7 +157,7 @@ function mcpEnvironment(env) {
   return { mode, origin };
 }
 
-const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable | suggest --report [--since <dur>] [--json] | suggest --save --expect <slug|none> [--lang es|en]';
+const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable | suggest --report [--since <dur>] [--json] | suggest --calibrate [--mode local|hosted] [--json] | suggest --save --expect <slug|none> [--lang es|en]';
 const dash = (v) => (v === null || v === undefined ? '-' : v);
 
 // One --explain line per candidate: the signals, then what the filters decided.
@@ -283,7 +289,7 @@ async function main(argv) {
         if ((o.expect !== undefined || o.lang !== undefined) && !o.save) throw new UserError('--expect and --lang go with --save (headjack suggest --save --expect <slug|none>)');
         if (o.save) {
           if (text) throw new UserError('--save never takes the prompt as an argument (shell history keeps it): pipe it on stdin or let it open $VISUAL / $EDITOR');
-          if (o.report || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o.json || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--save takes no other suggest option except --expect and --lang (usage: headjack ${SUGGEST_USAGE})`);
+          if (o.report || o.calibrate || o.mode !== undefined || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o.json || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--save takes no other suggest option except --expect and --lang (usage: headjack ${SUGGEST_USAGE})`);
           if (o.expect === undefined) throw new UserError('--save needs --expect <slug|none>: the skill this prompt should surface, or none');
           const [{ SLUG_RE }, { guessLang }, { appendCase }, { readPrompt }] = await Promise.all([
             import('../lib/handlers.mjs'), import('../lib/suggest.mjs'), import('../lib/suggest-log.mjs'), import('./suggest-save.mjs'),
@@ -293,6 +299,28 @@ async function main(argv) {
           const q = await readPrompt();
           await appendCase(ctx.dir, { q, slug: o.expect === 'none' ? null : o.expect, lang: lang ?? guessLang(q), at: new Date().toISOString() });
           console.log('saved the case to the suggest cases file');
+          return 0;
+        }
+        if (o.mode !== undefined && !o.calibrate) throw new UserError('--mode goes with --calibrate (headjack suggest --calibrate --mode hosted)');
+        if (o.calibrate) {
+          if (text || o.report || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--calibrate takes no text and no other suggest option except --mode and --json (usage: headjack ${SUGGEST_USAGE})`);
+          const asked = o.mode === undefined ? undefined : oneOf(o.mode, ['local', 'hosted'], '--mode');
+          const [{ loadSuggestConfig }, { evalFile, loadEvalSet, checkMinimums, calibrate, formatCalibration }, { suggestDeps }] = await Promise.all([
+            import('../lib/suggest-config.mjs'), import('../lib/suggest-calibrate.mjs'), import('./suggest-deps.mjs'),
+          ]);
+          const config = await loadSuggestConfig(ctx.dir);
+          const rows = await loadEvalSet(ctx.dir);
+          const missing = checkMinimums(rows);
+          if (missing.length) throw new UserError(`the eval set ${evalFile(ctx.dir)} is too small to calibrate (it needs 20 rows per language, 8 of them with slug: null):\n  ${missing.join('\n  ')}`);
+          // The mode follows --mode, else suggest.hosted only, never HEADJACK_MODE or HEADJACK_URL. Each row is searched once
+          // with purpose eval and entry eval: no log, no active state. Nothing is written, config.json included.
+          const mode = asked ?? (config.suggest.hosted ? 'hosted' : 'local');
+          const report = await calibrate({
+            rows, mode, config, cwd: ctx.cwd, home: ctx.home,
+            depsFor: (sessionId) => suggestDeps({ ctx, config, sessionId, purpose: 'eval' }),
+          });
+          // The kept search records stay out of the JSON: they are working data, not the report.
+          console.log(o.json ? JSON.stringify({ ...report, rows: report.rows.map(({ record, ...row }) => row) }, null, 2) : formatCalibration(report));
           return 0;
         }
         if (o.since !== undefined && !o.report) throw new UserError('--since goes with --report (headjack suggest --report --since 7d)');

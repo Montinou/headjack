@@ -59,12 +59,16 @@ export function fileArg(argv) {
   return file;
 }
 
-// Top-3 hit rate (the pass criterion) plus top-1 accuracy per language. Every slug must be in the vault.
+// Top-3 hit rate (the pass criterion) plus top-1 accuracy per language. Every slug must be in the vault. A row with
+// `slug: null` ("nothing should be suggested") has no top-3 to hit: it is skipped and counted (the suggestion calibration,
+// `headjack suggest --calibrate`, is what measures those rows).
 // Every result must carry `expect` when given, and the whole run one variant: otherwise it throws naming the row.
 export async function evaluate(pairs, api, log = console.log, { expect } = {}) {
   const seen = new Set();
   const byLang = { en: { evaluated: 0, top3: 0, top1: 0 }, es: { evaluated: 0, top3: 0, top1: 0 } };
+  let skipped = 0;
   for (const { q, slug, lang } of pairs) {
+    if (slug === null) { skipped++; continue; }
     if (!(await api.getSkill(slug))) throw new Error(`slug missing from the vault: ${slug}`);
     const stats = (byLang[lang] ??= { evaluated: 0, top3: 0, top1: 0 });
     stats.evaluated++;
@@ -81,6 +85,7 @@ export async function evaluate(pairs, api, log = console.log, { expect } = {}) {
     if (seen.size > 1) throw new Error(`mixed variants in one run (${[...seen].join(', ')}) in row "${q}" (${slug})`);
   }
   log('');
+  if (skipped) log(`skipped ${skipped} ${skipped === 1 ? 'row' : 'rows'} with slug: null`);
   for (const [lang, s] of Object.entries(byLang)) {
     log(`${lang}: ${s.top3}/${s.evaluated} in top 3 (${pct(s.top3, s.evaluated)}%) · top 1 ${s.top1}/${s.evaluated}`);
   }

@@ -189,3 +189,33 @@ test('expectArg reads --expect rrf-english|rrf-bilingual and rejects anything el
   assert.throws(() => expectArg(['--expect', 'bilingual']), { code: 'usage', message: 'usage: npm run search-eval -- --file <eval.json> [--expect rrf-english|rrf-bilingual]' });
   assert.throws(() => expectArg(['--expect']), { code: 'usage' });
 });
+
+test('evaluate skips rows with slug: null, prints the count and evaluates the rest', async () => {
+  const searched = [];
+  const looked = [];
+  const api = {
+    async getSkill(slug) { looked.push(slug); return { slug }; },
+    async search(q) { searched.push(q); return [{ slug: 'x' }]; },
+  };
+  const log = captureLog();
+  const out = await evaluate([
+    { q: 'a', slug: 'x', lang: 'en' },
+    { q: 'nothing fits this', slug: null, lang: 'en' },
+    { q: 'd', slug: 'x', lang: 'es' },
+  ], api, log);
+  assert.deepEqual(out, { byLang: { en: { evaluated: 1, top3: 1, top1: 1 }, es: { evaluated: 1, top3: 1, top1: 1 } } });
+  assert.deepEqual(searched, ['a', 'd']);
+  assert.deepEqual(looked, ['x', 'x']);
+  assert.match(log.text(), /skipped 1 row with slug: null/);
+  assert.doesNotMatch(log.text(), /nothing fits this/);
+});
+
+test('evaluate counts several skipped null rows in the plural and prints nothing when there are none', async () => {
+  const api = { async getSkill(slug) { return { slug }; }, async search() { return [{ slug: 'x' }]; } };
+  const some = captureLog();
+  await evaluate([{ q: 'a', slug: 'x', lang: 'en' }, { q: 'b', slug: null, lang: 'en' }, { q: 'c', slug: null, lang: 'es' }], api, some);
+  assert.match(some.text(), /skipped 2 rows with slug: null/);
+  const none = captureLog();
+  await evaluate([{ q: 'a', slug: 'x', lang: 'en' }], api, none);
+  assert.doesNotMatch(none.text(), /skipped/);
+});
