@@ -29,6 +29,7 @@ const USAGE = `headjack — personal skill vault
   headjack cleanup [--harness <id,…>] [--older-than 12h|30m|2d] [--dry-run]
   headjack suggest "<text>" [--json] [--explain] [--session-id <id>]
   headjack suggest --enable [--hosted|--local] | --disable
+  headjack hook prompt|warmup|skill-used   (internal: run by the Claude Code hooks, not by hand)
   headjack list [--active] [--json]
   headjack harness detect
   headjack review <github-url|git-url|path> [--path sub/dir] [--slug s]
@@ -136,12 +137,61 @@ function explainLine(c, slugPattern) {
   return `  ${slug}  ${signals.join(' ')}  active=${c.active} review=${c.review} passed=${c.passed} rejected_by=${dash(c.rejected_by)}`;
 }
 
+// `headjack hook <name>` (internal, spec §4.1): reads the hook JSON from stdin, prints what runHook returns and exits 0
+// whatever happens. It exits explicitly: a hosted call stuck in a credential refresh (which takes no abort signal) would
+// otherwise keep the process alive past the deadline.
+const HOOK_NAMES = ['prompt', 'warmup', 'skill-used'];
+const HOOK_STDIN_TIMEOUT_MS = 2000;
+const HOOK_STDIN_MAX_BYTES = 8 * 1024 * 1024;
+
+// All of stdin as text; '' when it is bigger than the cap or does not end within the timeout.
+async function readHookStdin() {
+  const chunks = [];
+  let size = 0;
+  let oversize = false;
+  let timer;
+  const read = (async () => {
+    for await (const chunk of process.stdin) {
+      size += chunk.length;
+      if (size > HOOK_STDIN_MAX_BYTES) { oversize = true; return; }
+      chunks.push(chunk);
+    }
+  })();
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), HOOK_STDIN_TIMEOUT_MS); });
+  try {
+    if ((await Promise.race([read.then(() => 'done', () => 'error'), timeout])) !== 'done' || oversize) return '';
+  } finally {
+    clearTimeout(timer);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function hookCommand(name) {
+  process.stdout.on('error', () => {});
+  let stdout = '';
+  try {
+    if (HOOK_NAMES.includes(name)) {
+      const { runHook } = await import('./hook.mjs');
+      const home = process.env.HOME;
+      const dir = stateDir({ env: process.env, home });
+      ({ stdout } = await runHook(name, { stdin: await readHookStdin(), env: process.env, home, dir }));
+    }
+  } catch {
+    stdout = '';
+  }
+  if (stdout) await new Promise((resolve) => { process.stdout.write(stdout, resolve); });
+  process.exit(0);
+}
+
 function need(value, usage) {
   if (!value) throw new UserError(`usage: headjack ${usage}`);
   return value;
 }
 
 async function main(argv) {
+  // `hook` goes before parseArgs and the --help branch: a hook prints nothing and exits 0 whatever it is given, so an
+  // unknown option or --help must never reach the USAGE text or a non-zero exit.
+  if (argv[0] === 'hook') return hookCommand(argv[1]);
   let parsed;
   try { parsed = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true }); } catch (e) { throw new UserError(e.message); }
   const { values: o, positionals: [cmd, ...args] } = parsed;
@@ -252,9 +302,9 @@ async function main(argv) {
           return 0;
         }
         need(text, SUGGEST_USAGE);
-        const [{ suggest, formatBlock }, { SLUG_RE }, { localSearch }, { hostedSearch }, { appendEvent }, { sessionStore, SESSION_ID_RE }] = await Promise.all([
-          import('../lib/suggest.mjs'), import('../lib/handlers.mjs'), import('../lib/suggest-local.mjs'), import('../lib/suggest-hosted.mjs'),
-          import('../lib/suggest-log.mjs'), import('../lib/suggest-session.mjs'),
+        const [{ suggest, formatBlock }, { SLUG_RE }, { appendEvent }, { SESSION_ID_RE }, { suggestDeps }] = await Promise.all([
+          import('../lib/suggest.mjs'), import('../lib/handlers.mjs'), import('../lib/suggest-log.mjs'),
+          import('../lib/suggest-session.mjs'), import('./suggest-deps.mjs'),
         ]);
         const sessionId = o['session-id'];
         // The id names a file under <state dir>/suggest/sessions, so anything outside the pattern stops here.
@@ -262,13 +312,7 @@ async function main(argv) {
         const config = await loadSuggestConfig(ctx.dir);
         const mode = config.suggest.hosted ? 'hosted' : 'local';
         // The mode follows suggest.hosted only, never HEADJACK_MODE or HEADJACK_URL; the manual entry also migrates the vault.
-        const deps = {
-          search: (query, searchMode) => (searchMode === 'hosted'
-            ? hostedSearch({ env: process.env, dir: ctx.dir, config, query, purpose: 'suggest', sessionId })
-            : localSearch({ dir: ctx.dir, query, migrate: true })),
-          activeKeys: () => activeKeys(ctx),
-          sessionStore: sessionStore(ctx.dir),
-        };
+        const deps = suggestDeps({ ctx, config, sessionId, migrate: true });
         const started = Date.now();
         // The event carries no prompt text (spec §5.1); a failed search is logged as an 'error' run before it is reported.
         const logRun = (r) => appendEvent(ctx.dir, {

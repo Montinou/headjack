@@ -7,6 +7,7 @@ import { loadState, saveState } from '../../cli/state.mjs';
 import { UserError } from '../../lib/errors.mjs';
 import { fakeApi } from '../fake-api.mjs';
 import { tempDir, file, captureLog } from '../helpers.mjs';
+import { readEvents } from '../../lib/suggest-log.mjs';
 
 const exists = (p) => access(p).then(() => true, () => false);
 const files = [file('SKILL.md', '---\nname: demo\n---\n# Demo'), file('ref/notes.md', 'notes')];
@@ -655,4 +656,46 @@ test('a looping link is reported unmanaged, and remove, cleanup and verify neith
   await remove('demo', {}, ctx);
   for (const h of ['claude', 'codex', 'grok']) assert.equal(await readlink(path.join(home, `.${h}`, 'skills', 'demo')), 'demo', `${h} loop link kept`);
   assert.match(ctx.log.text(), /is no longer an headjack symlink/);
+});
+
+test('a successful add appends one add event with the session, slug and source, and nothing else', async () => {
+  const { ctx } = await setup();
+  ctx.env = { CLAUDE_CODE_SESSION_ID: 'sess-1234' };
+  await add('demo', { source: 'suggest' }, ctx);
+  const events = await readEvents(ctx.dir);
+  assert.equal(events.length, 1);
+  assert.deepEqual(Object.keys(events[0]).sort(), ['at', 'session', 'slug', 'source', 'type']);
+  assert.equal(events[0].type, 'add');
+  assert.equal(events[0].session, 'sess-1234');
+  assert.equal(events[0].slug, 'demo');
+  assert.equal(events[0].source, 'suggest');
+  assert.ok(Number.isFinite(Date.parse(events[0].at)));
+});
+
+test('the add event has a null session when CLAUDE_CODE_SESSION_ID is missing or not a valid id, and source defaults to manual', async () => {
+  for (const env of [{}, { CLAUDE_CODE_SESSION_ID: '../../etc' }, { CLAUDE_CODE_SESSION_ID: 'x'.repeat(65) }, { CLAUDE_CODE_SESSION_ID: '' }]) {
+    const { ctx } = await setup();
+    ctx.env = env;
+    await add('demo', {}, ctx);
+    const [event] = await readEvents(ctx.dir);
+    assert.equal(event.session, null, JSON.stringify(env));
+    assert.equal(event.source, 'manual');
+  }
+});
+
+test('a failed add writes no add event', async () => {
+  const { ctx } = await setup();
+  await assert.rejects(add('nope', {}, ctx));
+  ctx.api.failDownload('demo', new Error('network down'));
+  await assert.rejects(add('demo', {}, ctx));
+  assert.deepEqual(await readEvents(ctx.dir), []);
+});
+
+test('a logging failure never fails the add', async () => {
+  const { ctx } = await setup();
+  // <dir>/suggest is a file, so the log cannot be created.
+  await mkdir(ctx.dir, { recursive: true });
+  await writeFile(path.join(ctx.dir, 'suggest'), 'not a directory');
+  await add('demo', { source: 'suggest' }, ctx);
+  assert.ok(await exists(path.join(ctx.home, '.claude', 'skills', 'demo')));
 });
