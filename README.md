@@ -170,6 +170,7 @@ headjack harness detect                                 # record which harnesses
 headjack review https://github.com/owner/repo --path skills/x   # review a source and add it to the vault
 headjack updates                                        # upstream changes waiting for review
 headjack verify                                         # check local copies and links against their recorded hashes
+headjack suggest "deploy a next app to vercel"          # skills in the vault that fit a request and are not active yet
 ```
 
 Harnesses: `claude`, `codex` and `grok` (the default for `--to`) and 24 more (`gemini`, `cursor`, `windsurf`, `cline`, and
@@ -215,6 +216,19 @@ An optional `config.json` in that directory holds two lists of strings; unknown 
 - **`corePlugins`**: Claude Code plugins (`<plugin>@<marketplace>`) that stay enabled when `import --trim` disables
   the rest; `--keep a,b` adds to it for one run. Without it and without `--keep`, a trim leaves plugins as they are;
   with `--keep` alone, a trim disables every plugin outside the `--keep` list (`headjack restore` undoes it).
+
+### Suggestions
+
+`headjack suggest "<text>"` searches the vault for skills that fit a request and are not active yet, and prints them
+with the command that installs one (add `--json` for agents, `--explain` to see why each candidate was or was not
+offered). It prints nothing when there is no local vault. `headjack suggest --enable` and `--disable` switch the
+suggestions on and off in `config.json` (`--enable --hosted` searches the instance named by `HEADJACK_URL` or
+`suggest.url` instead of the local vault; `--enable --local` goes back). `--session-id <id>` stops a session from being
+offered the same skill twice.
+
+Local mode, the default, sends nothing anywhere. With `--enable --hosted` the cleaned request text (at most 300
+characters, with pasted blocks and code removed) is sent to that server in a POST body, and the server keeps only an HMAC
+of it. The local log, `<state dir>/suggest/log.jsonl`, never holds the text you searched for, in either mode.
 
 ## Security model
 
