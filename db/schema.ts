@@ -77,6 +77,8 @@ export const skills = pgTable('skills', {
   ownerId: ownerIdColumn(),
   // The current version's Spanish enrichment queries, joined by a space; matched by the Spanish full-text branch.
   queriesEsText: text('queries_es_text').notNull().default(''),
+  // ENRICHMENT_VERSION (lib/enrich-prompt.mjs) of the prompt that wrote queries_es_text; null when the text is ''.
+  enrichmentV: integer('enrichment_v'),
   ftsEs: tsvector('fts_es').generatedAlwaysAs((): SQL => sql`setweight(to_tsvector('spanish', queries_es_text), 'B')`),
 }, (t): PgTableExtraConfigValue[] => [
   unique('skills_owner_id_slug_key').on(t.ownerId, t.slug),

@@ -1,6 +1,9 @@
 // Fills skills.queries_es_text (Spanish enrichment queries, feeds fts_es) for current versions that have none, with
-// one model call per skill. Writes only that column: no chunks, tags or English side (spec §3.4).
-//   node scripts/backfill-queries-es.mjs [--dry-run] [--limit N] [--only slug1,slug2] [--force]
+// one model call per skill. Writes only that column and its enrichment_v: no chunks, tags or English side (spec §3.4).
+//   node scripts/backfill-queries-es.mjs [--dry-run] [--limit N] [--only slug1,slug2] [--force] [--stale]
+// --stale re-enriches rows whose enrichment_v is null or older than the current ENRICHMENT_VERSION (spec §6.3).
+// --force overrides --stale (every current version). After a deploy, run the default mode as well as --stale: rows
+// written by the old code during the build can hold '' with a version, which only the default mode picks up.
 // Runs as the app role for one owner: HEADJACK_OWNER_ID, or the initial owner. Reads DATABASE_URL_APP (or
 // DATABASE_URL + HEADJACK_APP_DB_PASSWORD) and the AI Gateway auth (VERCEL_OIDC_TOKEN or AI_GATEWAY_API_KEY) from
 // the environment or .env.local. Prints slugs, counts and token usage; only --dry-run also prints each slug's generated
