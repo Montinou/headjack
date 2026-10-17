@@ -137,50 +137,15 @@ function explainLine(c, slugPattern) {
   return `  ${slug}  ${signals.join(' ')}  active=${c.active} review=${c.review} passed=${c.passed} rejected_by=${dash(c.rejected_by)}`;
 }
 
-// `headjack hook <name>` (internal, spec §4.1): reads the hook JSON from stdin, prints what runHook returns and exits 0
-// whatever happens. It exits explicitly: a hosted call stuck in a credential refresh (which takes no abort signal) would
-// otherwise keep the process alive past the deadline.
-const HOOK_NAMES = ['prompt', 'warmup', 'skill-used'];
-const HOOK_STDIN_TIMEOUT_MS = 2000;
-const HOOK_STDIN_MAX_BYTES = 8 * 1024 * 1024;
-
-// All of stdin as text; '' when it is bigger than the cap or does not end within the timeout.
-async function readHookStdin() {
-  const chunks = [];
-  let size = 0;
-  let oversize = false;
-  let timer;
-  const read = (async () => {
-    for await (const chunk of process.stdin) {
-      size += chunk.length;
-      if (size > HOOK_STDIN_MAX_BYTES) { oversize = true; return; }
-      chunks.push(chunk);
-    }
-  })();
-  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), HOOK_STDIN_TIMEOUT_MS); });
-  try {
-    if ((await Promise.race([read.then(() => 'done', () => 'error'), timeout])) !== 'done' || oversize) return '';
-  } finally {
-    clearTimeout(timer);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
+// `headjack hook <name>` (internal, spec §4.1): the same code the plugin hooks run through cli/hook-entry.mjs, which reads
+// the hook JSON from stdin, prints what the hook returns and exits 0 whatever happens.
 async function hookCommand(name) {
-  process.stdout.on('error', () => {});
-  let stdout = '';
   try {
-    if (HOOK_NAMES.includes(name)) {
-      const { runHook } = await import('./hook.mjs');
-      const home = process.env.HOME;
-      const dir = stateDir({ env: process.env, home });
-      ({ stdout } = await runHook(name, { stdin: await readHookStdin(), env: process.env, home, dir }));
-    }
+    const { hookMain } = await import('./hook-entry.mjs');
+    return await hookMain(name);
   } catch {
-    stdout = '';
+    process.exit(0);
   }
-  if (stdout) await new Promise((resolve) => { process.stdout.write(stdout, resolve); });
-  process.exit(0);
 }
 
 function need(value, usage) {

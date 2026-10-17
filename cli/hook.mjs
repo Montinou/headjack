@@ -1,5 +1,6 @@
-// `headjack hook <name>`: the Claude Code hooks (spec §4.1). `prompt` runs the suggestion pipeline on every prompt and
-// `warmup` prepares the search off the prompt path. A hook never blocks or breaks a session: every failure ends in no
+// `headjack hook <name>`: the Claude Code hooks (spec §4.1). `prompt` runs the suggestion pipeline on every prompt,
+// `warmup` prepares the search off the prompt path and `skill-used` logs a Skill tool call (spec §5.1). The pipeline is
+// imported by `prompt` alone, so the other two stay cheap. A hook never blocks or breaks a session: every failure ends in no
 // output, and the only trace is one line in <dir>/suggest/hook.log. No npm dependencies.
 import { existsSync } from 'node:fs';
 import { appendFile, chmod, mkdir, rename, stat } from 'node:fs/promises';
@@ -9,8 +10,8 @@ import { UserError } from '../lib/errors.mjs';
 import { SESSION_ID_RE, pruneSessions, sessionStore } from '../lib/suggest-session.mjs';
 import { loadSuggestConfig } from '../lib/suggest-config.mjs';
 import { appendEvent } from '../lib/suggest-log.mjs';
-import { suggest, formatBlock } from '../lib/suggest.mjs';
-import { suggestDeps } from './suggest-deps.mjs';
+import { toVaultSlug } from '../lib/skill-name.mjs';
+import { enabledPlugins } from './active.mjs';
 
 // Two consecutive failures in one session open the breaker for ten minutes (spec §3.8).
 const BREAKER_FAILURES = 2;
@@ -18,6 +19,7 @@ const BREAKER_OPEN_MS = 10 * 60 * 1000;
 const HOOK_LOG_MAX_BYTES = 1024 * 1024;
 const WARMUP_QUERY = 'warm up the headjack skill search';
 const MAX_NOTE_CHARS = 200;
+const MAX_SKILL_NAME_CHARS = 200;
 const TIMEOUT = Symbol('deadline');
 
 const LAUNCHER = fileURLToPath(new URL('./headjack', import.meta.url));
@@ -92,6 +94,8 @@ async function promptHook({ stdin, env, home, dir, now, adapters }) {
   if (config.suggest.enabled !== true) return '';
   if (typeof input?.prompt !== 'string') throw new HookNote('malformed hook input');
 
+  const { suggest, formatBlock } = await import('../lib/suggest.mjs');
+  const { suggestDeps } = await import('./suggest-deps.mjs');
   const mode = config.suggest.hosted ? 'hosted' : 'local';
   const deadlineMs = config.suggest.deadlineMs[mode];
   const cwd = typeof input.cwd === 'string' && path.isAbsolute(input.cwd) ? input.cwd : process.cwd();
@@ -198,13 +202,44 @@ async function warmupHook({ stdin, env, home, dir, now, adapters }) {
   openVault({ dir, DatabaseSync: (await runtimeCheck()).DatabaseSync }).close();
 }
 
+// ---- skill-used ----
+
+// Every vault slug, read-only: no vault, a busy one or an unusable one gives an empty set (the invoke is logged unmapped).
+async function vaultSlugs(dir) {
+  try {
+    const { openVaultReadOnly } = await import('../lib/local/schema.mjs');
+    const { runtimeCheck } = await import('../lib/local/runtime.mjs');
+    const opened = openVaultReadOnly({ dir, DatabaseSync: (await runtimeCheck()).DatabaseSync });
+    if (!opened.ok) return new Set();
+    try {
+      return new Set(opened.db.prepare('select slug from skills').all().map((r) => r.slug));
+    } finally {
+      opened.db.close();
+    }
+  } catch {
+    return new Set();
+  }
+}
+
+// PostToolUse(Skill): one `invoke` event, log only (no session file, no network). The name goes through toVaultSlug; the
+// tool's arguments are never read, since they can quote the prompt.
+async function skillUsedHook({ stdin, home, dir, now }) {
+  const input = parseInput(stdin);
+  if (input?.tool_name !== 'Skill') return;
+  const skill = input.tool_input?.skill;
+  if (typeof skill !== 'string' || skill === '' || skill.length > MAX_SKILL_NAME_CHARS) return;
+  const slug = toVaultSlug(skill, { slugs: await vaultSlugs(dir), enabledPlugins: await enabledPlugins(home) });
+  await appendEvent(dir, { type: 'invoke', session: validSession(input) ?? null, at: new Date(now()).toISOString(), skill, slug });
+}
+
 // runHook(name, { stdin, env, home, dir, now, adapters }) resolves to { stdout } and never rejects: any exception gives
 // an empty stdout and one hook.log line. `now` is the clock (the breaker's); `adapters` replaces the search adapters
-// (tests). `skill-used` arrives with the add events; any other name is a no-op.
+// (tests). Any other name is a no-op.
 export async function runHook(name, { stdin = '', env = process.env, home = env.HOME, dir, now = Date.now, adapters } = {}) {
   try {
     if (name === 'prompt') return { stdout: await promptHook({ stdin, env, home, dir, now, adapters }) };
     if (name === 'warmup') await warmupHook({ stdin, env, home, dir, now, adapters });
+    if (name === 'skill-used') await skillUsedHook({ stdin, home, dir, now });
     return { stdout: '' };
   } catch (e) {
     await logHook(dir, String(name), e, undefined, now);
