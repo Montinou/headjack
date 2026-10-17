@@ -30,6 +30,7 @@ const USAGE = `headjack — personal skill vault
   headjack suggest "<text>" [--json] [--explain] [--session-id <id>]
   headjack suggest --enable [--hosted|--local] | --disable
   headjack suggest --report [--since 7d|12h|30m] [--json]
+  headjack suggest --save --expect <slug|none> [--lang es|en]   (prompt from stdin, or $VISUAL / $EDITOR on a terminal)
   headjack hook prompt|warmup|skill-used   (internal: run by the Claude Code hooks, not by hand)
   headjack list [--active] [--json]
   headjack harness detect
@@ -92,6 +93,9 @@ const OPTIONS = {
   local: { type: 'boolean' },
   report: { type: 'boolean' },
   since: { type: 'string' },
+  save: { type: 'boolean' },
+  expect: { type: 'string' },
+  lang: { type: 'string' },
 };
 
 const SOURCES = ['suggest', 'plan', 'manual'];
@@ -131,7 +135,7 @@ function mcpEnvironment(env) {
   return { mode, origin };
 }
 
-const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable | suggest --report [--since <dur>] [--json]';
+const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable | suggest --report [--since <dur>] [--json] | suggest --save --expect <slug|none> [--lang es|en]';
 const dash = (v) => (v === null || v === undefined ? '-' : v);
 
 // One --explain line per candidate: the signals, then what the filters decided.
@@ -259,13 +263,29 @@ async function main(argv) {
       }
       case 'suggest': {
         const text = args.join(' ').trim();
+        if ((o.expect !== undefined || o.lang !== undefined) && !o.save) throw new UserError('--expect and --lang go with --save (headjack suggest --save --expect <slug|none>)');
+        if (o.save) {
+          if (text) throw new UserError('--save never takes the prompt as an argument (shell history keeps it): pipe it on stdin or let it open $VISUAL / $EDITOR');
+          if (o.report || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o.json || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--save takes no other suggest option except --expect and --lang (usage: headjack ${SUGGEST_USAGE})`);
+          if (o.expect === undefined) throw new UserError('--save needs --expect <slug|none>: the skill this prompt should surface, or none');
+          const [{ SLUG_RE }, { guessLang }, { appendCase }, { readPrompt }] = await Promise.all([
+            import('../lib/handlers.mjs'), import('../lib/suggest.mjs'), import('../lib/suggest-log.mjs'), import('./suggest-save.mjs'),
+          ]);
+          if (o.expect !== 'none' && !SLUG_RE.test(o.expect)) throw new UserError('--expect must be a slug (letters, digits, . _ @ : -) or none');
+          const lang = o.lang === undefined ? undefined : oneOf(o.lang, ['es', 'en'], '--lang');
+          const q = await readPrompt();
+          await appendCase(ctx.dir, { q, slug: o.expect === 'none' ? null : o.expect, lang: lang ?? guessLang(q), at: new Date().toISOString() });
+          console.log('saved the case to the suggest cases file');
+          return 0;
+        }
         if (o.since !== undefined && !o.report) throw new UserError('--since goes with --report (headjack suggest --report --since 7d)');
         if (o.report) {
           if (text || o.enable || o.disable || o.hosted || o.local || o.explain || o['session-id'] !== undefined) throw new UserError(`--report takes no text and no other suggest option except --since and --json (usage: headjack ${SUGGEST_USAGE})`);
-          const [{ readEvents }, { outcomes, summarize, formatReport, WINDOW_MS }] = await Promise.all([import('../lib/suggest-log.mjs'), import('../lib/suggest-report.mjs')]);
+          const [{ readEvents }, { outcomes, summarize, formatReport }] = await Promise.all([import('../lib/suggest-log.mjs'), import('../lib/suggest-report.mjs')]);
           const since = o.since === undefined ? undefined : Date.now() - parseDuration(o.since, '--since');
-          // Events older than --since still count as context for the ones after it; only the report is trimmed.
-          const events = await readEvents(ctx.dir, since === undefined ? {} : { since: new Date(since - WINDOW_MS) });
+          // The whole log (capped at 2 x 5 MiB): a run older than --since still governs the adds after it, so only the
+          // outcomes are trimmed to --since, in outcomes() and summarize().
+          const events = await readEvents(ctx.dir);
           const result = outcomes(events, { since });
           const rows = summarize(result, events);
           console.log(o.json ? JSON.stringify({ ...result, rows }, null, 2) : formatReport(rows, result, { sinceLabel: o.since }));

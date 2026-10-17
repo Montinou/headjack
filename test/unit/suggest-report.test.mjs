@@ -299,3 +299,16 @@ test('bad --report combinations exit 2', async () => {
   const bad = await runCli(['suggest', '--report', '--since', '1w'], env);
   assert.match(bad.stderr, /--since/);
 });
+
+test('suggest --report --since keeps a miss whose governing hook run is older than the cutoff', async () => {
+  // The run (nothing active, nothing suggested) is an hour before the cutoff; the unsuggested add is an hour after it.
+  const { env } = await sandboxWith([
+    run(0, { at: nowMinus(7 * DAY + 60 * MIN), session: 's', outcome: 'none', candidates: [] }),
+    add(0, 'zq-helper', { at: nowMinus(7 * DAY - 60 * MIN), session: 's' }),
+  ]);
+  const res = await runCli(['suggest', '--report', '--since', '7d', '--json'], env);
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  const out = JSON.parse(res.stdout);
+  assert.deepEqual(out.missed.map((m) => [m.slug, m.via]), [['zq-helper', 'add']]);
+  assert.equal(out.rows.reduce((n, r) => n + r.runs, 0), 0, 'the run itself is trimmed from the report');
+});
