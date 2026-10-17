@@ -35,3 +35,12 @@ test('rankSkills with an embedder fuses the vector and text rankings', async () 
   assert.deepEqual(calls.sort(), ['text', 'vector']);
   assert.equal(out.find((r) => r.slug === 's2').matched, 'both');
 });
+
+test('rankSkills maps review_notes to a review status and drops the notes', async () => {
+  const notes = { 1: 'grandfathered: installed before the vault, not reviewed', 2: null };
+  const repo = { ...repoWith([]), getSkillsByIds: async (ids) => ids.map((id) => ({ ...row(id, `s${id}`), review_notes: notes[id] })) };
+  const out = await rankSkills({ repo, embed: undefined, query: 'q', tags: [], k: 8, variant: 'rrf-english' });
+  assert.equal(out.find((r) => r.slug === 's1').review, 'unreviewed');
+  assert.equal(out.find((r) => r.slug === 's2').review, 'approved');
+  assert.ok(out.every((r) => !('review_notes' in r)));
+});

@@ -199,3 +199,25 @@ localTest('the in-process api lists published skills with kind and tag filters a
     close();
   }
 });
+
+localTest('search results carry a review status and never review_notes', async () => {
+  const dir = await tempDir('sv-local-review-');
+  const { api, close } = await createLocalApi({ dir });
+  try {
+    const grand = [file('SKILL.md', '---\nname: okapi-old\ndescription: Tracks okapi sightings\n---\n# Use\nCount okapis.')];
+    const rev = [file('SKILL.md', '---\nname: okapi-new\ndescription: Tracks okapi sightings\n---\n# Use\nCount okapis.')];
+    const mk = (slug, files, review_notes) => ({
+      slug, name: slug, description: 'Tracks okapi sightings', kind: 'skill', tags: [], source: { kind: 'local' },
+      sha256: hashFiles(files), status: 'approved', review_notes, scan_flags: [], chunks: [`${slug}: Tracks okapi sightings`, 'Count okapis.'],
+    });
+    await api.publish(mk('okapi-old', grand, 'grandfathered: installed before the vault, not reviewed'), pack(grand));
+    await api.publish(mk('okapi-new', rev, 'reviewed by hand'), pack(rev));
+    const results = await api.search('okapi');
+    const by = Object.fromEntries(results.map((r) => [r.slug, r]));
+    assert.equal(by['okapi-old'].review, 'unreviewed');
+    assert.equal(by['okapi-new'].review, 'approved');
+    assert.ok(results.every((r) => !('review_notes' in r)));
+  } finally {
+    close();
+  }
+});

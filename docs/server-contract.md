@@ -92,7 +92,9 @@ Ranked search over the catalog. Query parameters:
 - `tag` (optional, repeatable, or comma-separated): every tag listed must be carried by a result.
 
 Answer `200`: `{ "results": [ ... ] }`, best first. Each result has `slug`, `name`, `description`, `kind`, `plugin_slug`,
-`tags` and `update_available` as in the skill record, and the ranking diagnostics `score`, `fts_rank`, `vector_rank`,
+`tags` and `update_available` as in the skill record, a `review` status (`unreviewed` when the current version's review
+notes start with `grandfathered:`, `plugin:` or `plugin skill:`, else `approved`; the notes themselves are not part of a
+search result), and the ranking diagnostics `score`, `fts_rank`, `vector_rank`,
 `similarity`, `matched` and `variant`. A result that stands for several installs of one plugin lists the other slugs in
 `alternatives`. The skill's `quality` is not part of a search result. The client uses `slug`, `name`, `description`, `kind`,
 `tags`, `update_available` and `alternatives`; the diagnostics are for evaluation and may be omitted.

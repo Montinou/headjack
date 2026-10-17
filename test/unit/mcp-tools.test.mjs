@@ -201,7 +201,7 @@ test('shared ranking preserves quality prior, signals, kind filtering and market
   const repo = { searchVector: async () => [{ id: 1, sim: .9 }, { id: 3, sim: .8 }], searchText: async () => [2, 3], getSkillsByIds: async () => rows };
   const ranked = await rankSkills({ repo, embed: async () => [[1]], query: 'find', tags: [], k: 3, variant: 'rrf-english' });
   assert.deepEqual(ranked.map((row) => row.slug), ['plugin-b', 'plain']);
-  assert.deepEqual(ranked[0], { slug: 'plugin-b', name: 'Same', kind: 'plugin', plugin_slug: 'p@b', quality: null, score: 2 / 62, fts_rank: 2, vector_rank: 2, similarity: .8, matched: 'both', variant: 'rrf-english', alternatives: ['plugin-a'] });
+  assert.deepEqual(ranked[0], { slug: 'plugin-b', name: 'Same', kind: 'plugin', plugin_slug: 'p@b', quality: null, review: 'approved', score: 2 / 62, fts_rank: 2, vector_rank: 2, similarity: .8, matched: 'both', variant: 'rrf-english', alternatives: ['plugin-a'] });
   const singles = await rankSkills({ repo: { ...repo, searchVector: async () => [{ id: 1, sim: .9 }], searchText: async () => [2] }, embed: async () => [[1]], query: 'find', tags: [], k: 3, variant: 'rrf-bilingual' });
   assert.deepEqual(singles.map((row) => row.slug), ['plugin-a', 'plain']);
   assert.equal(singles[0].score, 1 / 61 + .0001);
