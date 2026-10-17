@@ -230,12 +230,25 @@ Local mode, the default, sends nothing anywhere. With `--enable --hosted` the cl
 characters, with pasted blocks and code removed) is sent to that server in a POST body, and the server keeps only an HMAC
 of it. The local log, `<state dir>/suggest/log.jsonl`, never holds the text you searched for, in either mode.
 
+#### Spanish enrichment (opt-in)
+
+Spanish requests match a local vault through Spanish example requests stored with each skill, and through a small
+glossary for skills without any. `headjack enrich [--stale] [<slug>…]` writes those examples with the Vercel AI Gateway.
+It is off until you set `"enrich": { "enabled": true }` in `config.json` and provide a key in `AI_GATEWAY_API_KEY` or in
+`<state dir>/ai-gateway-key` (a regular file with mode 0600; any other mode is refused). It sends each skill's name,
+description and the first 6,000 characters of its body, never your requests, and only after a secret scan of exactly that
+text: a skill that trips the scan is skipped and reported by slug and rule. The key, the skill text and the answers are
+never printed or logged. Without slugs it takes the skills that have no Spanish text yet, `--stale` adds those written
+by an older prompt, and slugs name skills explicitly. With enrichment enabled, `import` also enriches the skills it
+publishes. Hosted skills are enriched by the server, so the command exits 2 in hosted mode.
+
 ## Security model
 
 - **Untrusted content.** Stored `SKILL.md` text is source material, not instructions. The CLI scans sources for secrets
   and binaries during `review`, and agents are told to ask before installing anything.
 - **Local by default.** Local mode keeps the vault in a mode-600 file in a mode-700 directory and makes no network call
-  for search.
+  for search. The one opt-in exception is `headjack enrich` (see Suggestions), which sends skill text, scanned for secrets
+  first, to the AI Gateway.
 - **Per-owner isolation on the instance.** Every table that holds catalog data has Postgres row-level security keyed to an
   owner id, and the app connects as a role without `BYPASSRLS`, so the policies always apply. Clerk sessions and
   resource-bound OAuth grants identify users; the MCP route accepts only grants with `skills:read`.

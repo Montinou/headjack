@@ -208,3 +208,132 @@ localTest('matched_terms works on the read-only connection the suggestion hook o
     opened.db.close();
   }
 });
+
+// ---- Spanish tables (es, en-gloss) ----
+
+// Publishes the given skills and gives each its Spanish example requests (null: none) and enrichment version.
+async function spanishFixture(rows) {
+  const { DatabaseSync } = await runtimeCheck();
+  const dir = await tempDir('sv-signals-es-');
+  const db = openVault({ dir, DatabaseSync });
+  const repo = createSqliteRepo(db);
+  for (const [slug, description, es, v] of rows) {
+    const { skillId, versionId } = await repo.publish(skill(slug, description, `${slug} body`));
+    if (es !== null) await repo.setSpanish(skillId, versionId, es, v);
+  }
+  return { db, repo };
+}
+
+localTest('es: a skill whose Spanish example request matches ranks 1 in the es table', async () => {
+  const { db, repo } = await spanishFixture([
+    ['ship-it', 'Ship things', 'desplegar una app en vercel', 1],
+    ['gardening', 'Grow tomatoes', 'regar las plantas', 1],
+  ]);
+  try {
+    const rows = await repo.searchSignals('desplegar mi app', { tables: ['en', 'es'] });
+    assert.deepEqual(rows.map((r) => [r.slug, r.fts_table, r.table_rank]), [['ship-it', 'es', 1]]);
+    assert.equal(rows[0].matched_terms, 2);
+    assert.ok(rows[0].bm25 < 0);
+    // Accents and case fold in Spanish; the English table never sees these words.
+    assert.deepEqual((await repo.searchSignals('DESPLEGÁR', { tables: ['es'] })).map((r) => r.slug), ['ship-it']);
+    assert.deepEqual(await repo.searchSignals('desplegar mi app', { tables: ['en'] }), []);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('es: the query drops SPANISH_FILLER words, so filler alone never matches', async () => {
+  const { db, repo } = await spanishFixture([
+    ['ship-it', 'Ship things', 'desplegar una app', 1],
+    ['soup', 'Cook soup', 'quiero hacer sopa', 1],
+  ]);
+  try {
+    const rows = await repo.searchSignals('quiero hacer desplegar', { tables: ['es'] });
+    assert.deepEqual(rows.map((r) => r.slug), ['ship-it']);
+    assert.deepEqual(await repo.searchSignals('quiero hacer', { tables: ['es'] }), []);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('es: no stemming, and the table is queried only when asked for', async () => {
+  const { db, repo } = await spanishFixture([['ship-it', 'Ship things', 'desplegar una app', 1]]);
+  try {
+    assert.deepEqual(await repo.searchSignals('despliegue', { tables: ['es'] }), []);
+    assert.deepEqual(await repo.searchSignals('desplegar'), []);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('en-gloss: only rows with a null enrichment_v, matched on the glossary English terms', async () => {
+  const { db, repo } = await spanishFixture([
+    ['deploy-enriched', 'Deploy an app to vercel', 'desplegar una app', 1],
+    ['deploy-plain', 'Deploy apps', null, null],
+  ]);
+  try {
+    const opts = { glossaryTerms: ['deploy'] };
+    const gloss = await repo.searchSignals('desplegar app', { ...opts, tables: ['en-gloss'] });
+    assert.deepEqual(gloss.map((r) => [r.slug, r.fts_table, r.table_rank]), [['deploy-plain', 'en-gloss', 1]]);
+    // The control: the same English terms do reach the enriched row through the en table.
+    const en = await repo.searchSignals('deploy', { tables: ['en'] });
+    assert.deepEqual(en.map((r) => r.slug).sort(), ['deploy-enriched', 'deploy-plain']);
+    // No glossary terms, or the table not asked for: nothing.
+    assert.deepEqual(await repo.searchSignals('desplegar app', { tables: ['en-gloss'] }), []);
+    assert.deepEqual(await repo.searchSignals('qqq zzz', { ...opts, tables: ['en', 'es'] }), []);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('en-gloss terms are quoted like every other term, so no FTS5 syntax gets through', async () => {
+  const { db, repo } = await spanishFixture([['deploy-plain', 'Deploy apps', null, null]]);
+  try {
+    const rows = await repo.searchSignals('x', { tables: ['en-gloss'], glossaryTerms: ['deploy" OR "apps', 'NEAR(deploy apps)'] });
+    // The operators are split into plain words, so the row matches on its words and nothing else.
+    assert.deepEqual(rows.map((r) => r.slug), ['deploy-plain']);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('ranks, gaps and matched terms are per table: each row keeps the numbers of the table it won in', async () => {
+  const { db, repo } = await spanishFixture([
+    ['zebra-strong', 'zebra zebra zebra stripes', null, null],
+    ['zebra-weak', 'zebra', null, null],
+    ['cebra-strong', 'Animals', 'cebra cebra cebra rayas', 1],
+    ['cebra-weak', 'Pets', 'cebra', 1],
+  ]);
+  try {
+    const query = 'zebra cebra';
+    const both = await repo.searchSignals(query, { tables: ['en', 'es'], limit: 10 });
+    assert.deepEqual(both.map((r) => [r.slug, r.fts_table, r.table_rank]), [
+      ['zebra-strong', 'en', 1], ['cebra-strong', 'es', 1], ['zebra-weak', 'en', 2], ['cebra-weak', 'es', 2],
+    ]);
+    const bySlug = Object.fromEntries(both.map((r) => [r.slug, r]));
+    assert.ok(bySlug['zebra-strong'].bm25_gap > 0 && bySlug['cebra-strong'].bm25_gap > 0);
+    assert.equal(bySlug['zebra-strong'].bm25_gap, bySlug['zebra-weak'].bm25 - bySlug['zebra-strong'].bm25);
+    assert.equal(bySlug['cebra-strong'].bm25_gap, bySlug['cebra-weak'].bm25 - bySlug['cebra-strong'].bm25);
+    assert.equal(bySlug['zebra-weak'].bm25_gap, null);
+    assert.equal(bySlug['cebra-weak'].bm25_gap, null);
+    // Rank-1 rows count the query tokens their own table matches.
+    assert.equal(bySlug['zebra-strong'].matched_terms, 1);
+    assert.equal(bySlug['cebra-strong'].matched_terms, 1);
+    // The same numbers as querying each table alone.
+    const en = await repo.searchSignals(query, { tables: ['en'], limit: 10 });
+    const es = await repo.searchSignals(query, { tables: ['es'], limit: 10 });
+    assert.equal(en[0].bm25_gap, bySlug['zebra-strong'].bm25_gap);
+    assert.equal(es[0].bm25_gap, bySlug['cebra-strong'].bm25_gap);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('an unknown table is still rejected', async () => {
+  const { db, repo } = await spanishFixture([]);
+  try {
+    await assert.rejects(() => repo.searchSignals('x', { tables: ['fr'] }), /unknown search table: fr/);
+  } finally {
+    db.close();
+  }
+});

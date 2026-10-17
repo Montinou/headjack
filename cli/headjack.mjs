@@ -39,6 +39,7 @@ const USAGE = `headjack — personal skill vault
   headjack updates [--grandfathered]
   headjack import --dry-run | import [--interactive]
   headjack import --trim [--keep a,b] [--only-harness <id,…>] [--dry-run]
+  headjack enrich [--stale] [<slug>…]
   headjack verify
   headjack restore <backup-dir>
   headjack gc
@@ -48,6 +49,13 @@ suggest searches the vault for skills that fit <text> and prints the ones you do
 missing). --enable / --disable turn the prompt hook's suggestions on and off in <state dir>/config.json; --hosted / --local
 pick the search the hook uses. --session-id <id> remembers what was suggested for that session. --report prints, from the
 suggestion log, how many suggestions were taken (hit), left alone (ignored) or beaten by a skill you added or used anyway (missed).
+
+enrich (local mode only) writes Spanish example requests for vault skills so Spanish prompts match them. It is opt-in: set
+"enrich": { "enabled": true } in <state dir>/config.json and give an AI Gateway key in AI_GATEWAY_API_KEY or in
+<state dir>/ai-gateway-key (mode 0600). It sends each skill's name, description and the first 6,000 characters of its body to the
+Vercel AI Gateway, after a secret scan of exactly that text; never your prompts. Without slugs it takes the skills that have no
+Spanish text yet, --stale those enriched by an older prompt too, and <slug>… exactly those skills. Hosted skills are enriched by
+the server. With enrich.enabled, import also enriches the skills it publishes.
 
 Harness ids: claude, codex, grok and any that "harness detect" finds (gemini, cursor, windsurf, …);
 "all" = every detected one. --session marks the install so that "cleanup" removes it.
@@ -96,6 +104,7 @@ const OPTIONS = {
   save: { type: 'boolean' },
   expect: { type: 'string' },
   lang: { type: 'string' },
+  stale: { type: 'boolean' },
 };
 
 const SOURCES = ['suggest', 'plan', 'manual'];
@@ -200,8 +209,9 @@ async function main(argv) {
     return open({ dir: ctx.dir, DatabaseSync: (await runtimeCheck()).DatabaseSync });
   });
   const connect = async () => {
-    const { api, close } = await openApi(ctx);
+    const { api, repo, close } = await openApi(ctx);
     ctx.api = api;
+    ctx.repo = repo;
     ctx.closeApi = close;
   };
   const localLine = async () => {
@@ -435,7 +445,20 @@ async function main(argv) {
         await connect();
         const r = await runImport({ interactive: o.interactive }, ctx);
         console.log(`published: ${r.published.length}\nalready existed: ${r.existing.length}\nblocked: ${r.blocked.map((b) => `${b.slug} (${b.reason})`).join('; ') || 'none'}\nfailed: ${r.failed.map((f) => `${f.slug} (${f.reason})`).join('; ') || 'none'}\nnot uploaded: ${r.skipped.length}`);
+        // Local mode only, and only when enrich.enabled: enrichment is a best effort after the import and never changes the
+        // exit code (enrichAfterImport does not throw). Hosted skills are enriched by the server.
+        if (isLocal() && r.published.length) {
+          const { enrichAfterImport } = await import('./enrich-local.mjs');
+          await enrichAfterImport({ repo: ctx.repo, published: r.published, env: process.env, dir: ctx.dir, log: ctx.log });
+        }
         return 0;
+      }
+      case 'enrich': {
+        if (!isLocal()) throw new UserError('the server enriches hosted skills; headjack enrich only works on the local vault');
+        const [{ loadSuggestConfig }, { enrichCommand }] = await Promise.all([import('../lib/suggest-config.mjs'), import('./enrich-local.mjs')]);
+        const config = await loadSuggestConfig(ctx.dir);
+        await connect();
+        return enrichCommand({ repo: ctx.repo, slugs: args, stale: Boolean(o.stale), config, env: process.env, dir: ctx.dir, log: ctx.log });
       }
       case 'verify': {
         const problems = await verify(ctx);

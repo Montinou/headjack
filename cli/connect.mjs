@@ -21,7 +21,8 @@ export async function guardLocal(dir, open) {
 
 // `ctx.dir` is the state directory. `env` picks the mode (HEADJACK_MODE, else HEADJACK_URL), `log` carries the implicit-local
 // warning, `fetchImpl` and `maxBodyBytes` (a limit on every JSON answer, see createApi) go to the hosted api only. `close` is a
-// no-op for hosted mode and idempotent for the local vault.
+// no-op for hosted mode and idempotent for the local vault. Local mode also returns `repo`, the vault's repository, for the
+// commands that write to it directly (enrich).
 export async function openApi(ctx, { env = process.env, log = console.error, fetchImpl, maxBodyBytes } = {}) {
   if (resolveMode(env) !== 'local') {
     return { api: createApi({ ...(await loadRemote({ env, dir: ctx.dir })), dir: ctx.dir, env, fetchImpl, maxBodyBytes }), close: () => {} };
@@ -32,6 +33,6 @@ export async function openApi(ctx, { env = process.env, log = console.error, fet
     log('headjack: HEADJACK_URL is not set, using the local vault; set HEADJACK_URL (or HEADJACK_MODE=remote) to use your hosted vault');
   }
   const { createLocalApi } = await import('../lib/local/api.mjs');
-  const { api, close } = await guardLocal(ctx.dir, () => createLocalApi({ dir: ctx.dir, env }));
-  return { api, close };
+  const { api, repo, close } = await guardLocal(ctx.dir, () => createLocalApi({ dir: ctx.dir, env }));
+  return { api, repo, close };
 }
