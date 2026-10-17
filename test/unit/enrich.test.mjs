@@ -259,3 +259,12 @@ test('gatewayGenerate still returns the bare object, generated with ENRICH_SCHEM
   assert.deepEqual(out, good);
   assert.deepEqual(Object.keys(model.doGenerateCalls[0].responseFormat?.schema?.properties ?? {}).sort(), ['queries_en', 'queries_es', 'tags']);
 });
+
+test('limits helpers live in enrichment-limits and keep their behavior', async () => {
+  const { LIMITS, cleanQueries, cleanTags } = await import('../../lib/enrichment-limits.mjs');
+  assert.deepEqual(LIMITS, { en: [4, 5], es: [2, 3], tags: [3, 6] });
+  assert.deepEqual(cleanQueries([' a  b ', 'A B', 'c'], new Set(), [2, 3], 'English'), ['a b', 'c']);
+  assert.throws(() => cleanQueries(['a'], new Set(), [2, 3], 'English'), /returned 1 English queries, expected at least 2/);
+  assert.deepEqual(cleanTags(['Foo Bar', 'foo-bar', 'baz', 'qux'], [3, 6]), ['foo-bar', 'baz', 'qux']);
+  assert.throws(() => cleanTags(['a'], [3, 6]), /returned 1 tags/);
+});

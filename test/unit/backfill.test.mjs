@@ -99,9 +99,10 @@ test('runs at most 4 enrichments at a time', async () => {
   assert.equal(peak, 4);
 });
 
-test('parseBackfillArgs reads --dry-run, --limit, --only and --force', () => {
-  assert.deepEqual(parseBackfillArgs([]), { dryRun: false, limit: undefined, only: [], force: false });
-  assert.deepEqual(parseBackfillArgs(['--dry-run', '--limit', '3', '--only', 'a, b,', '--force']), { dryRun: true, limit: 3, only: ['a', 'b'], force: true });
+test('parseBackfillArgs reads --dry-run, --limit, --only, --force and --stale', () => {
+  assert.deepEqual(parseBackfillArgs([]), { dryRun: false, limit: undefined, only: [], force: false, stale: false });
+  assert.deepEqual(parseBackfillArgs(['--dry-run', '--limit', '3', '--only', 'a, b,', '--force']), { dryRun: true, limit: 3, only: ['a', 'b'], force: true, stale: false });
+  assert.equal(parseBackfillArgs(['--stale']).stale, true);
   assert.throws(() => parseBackfillArgs(['--limit', '0']), /--limit/);
   assert.throws(() => parseBackfillArgs(['--limit', 'x']), /--limit/);
   assert.throws(() => parseBackfillArgs(['--nope']), /nope/);
@@ -212,6 +213,13 @@ test('backfillQueriesEs passes force and only to the listing, counts over every 
   assert.equal(out.filled.length, 2);
   assert.deepEqual(out.before, { total: 4, withText: 0 }, 'counts cover all current versions, not only the targets');
   assert.deepEqual(out.after, { total: 4, withText: 2 });
+});
+
+test('backfillQueriesEs passes stale to the listing', async () => {
+  const repo = fakeEsRepo([target('a', { skill_id: 1 })]);
+  await backfillQueriesEs({ repo, enrichEs: fakeEnrichEs(), log: captureLog(), stale: true });
+  assert.ok(repo.calls.list.some((o) => o.stale === true), 'targets listed with stale');
+  assert.ok(repo.calls.list.filter((o) => o.stale === true).every((o) => o.force === false), 'stale alone does not force');
 });
 
 test('backfillQueriesEs runs at most 4 generations at a time', async () => {

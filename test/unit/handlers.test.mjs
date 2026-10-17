@@ -596,6 +596,17 @@ test('getSkill returns tags and quality from the repo row', async () => {
   assert.deepEqual(skill.quality, { reuse: 3, verdict: 'VAULT' });
 });
 
+test('getSkill returns queries_es_text and enrichment_v from the repo row', async () => {
+  const { h } = make({ getSkill: async (slug) => ({ slug, queries_es_text: 'mezclar pistas', enrichment_v: 1 }) });
+  const { skill } = await (await h.getSkill(req('/api/skills/text-to-speech'))).json();
+  assert.equal(skill.queries_es_text, 'mezclar pistas');
+  assert.equal(skill.enrichment_v, 1);
+  const { h: h2 } = make({ getSkill: async (slug) => ({ slug, queries_es_text: '', enrichment_v: null }) });
+  const { skill: empty } = await (await h2.getSkill(req('/api/skills/text-to-speech'))).json();
+  assert.equal(empty.queries_es_text, '');
+  assert.equal(empty.enrichment_v, null);
+});
+
 // --- Fix round 1: hostile enrichers, duplicate pre-check ---
 
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;

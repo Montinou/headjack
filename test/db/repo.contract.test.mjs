@@ -69,7 +69,7 @@ function contract(label, makeRepo, define = test) {
       slug: m.slug, name: m.name, description: m.description, kind: 'skill', plugin_slug: null, tags: m.tags, quality: null,
       source_path: m.source_path, source_kind: 'github', source_url: m.source.url, default_ref: 'HEAD',
       commit_sha: m.commit_sha, sha256: m.sha256, size: 3, review_notes: 'ok', scan_flags: m.scan_flags,
-      update_available: false, latest_commit: m.commit_sha,
+      update_available: false, latest_commit: m.commit_sha, queries_es_text: '', enrichment_v: null,
     });
     assert.equal(await repo.getSkill('nope'), null);
 
