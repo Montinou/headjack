@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { localSupported, localTest } from '../local-helpers.mjs';
 import { tempDir } from '../helpers.mjs';
 import { UserError } from '../../lib/errors.mjs';
 import { runtimeCheck } from '../../lib/local/runtime.mjs';
-import { MIGRATIONS, isBusy, openVault, vaultInfo } from '../../lib/local/schema.mjs';
+import { MIGRATIONS, isBusy, openVault, openVaultReadOnly, vaultInfo } from '../../lib/local/schema.mjs';
 
 const { DatabaseSync } = (await localSupported) ? await runtimeCheck() : {};
 const mode = async (p) => (await stat(p)).mode & 0o777;
@@ -86,4 +87,64 @@ localTest('isBusy is true for the lock error of a second writer and false for an
   assert.equal(isBusy(err), true);
   assert.equal(isBusy(new Error('database is locked')), false);
   assert.equal(isBusy(undefined), false);
+});
+
+localTest('openVaultReadOnly reports a missing vault and creates neither the directory nor the file', async () => {
+  const parent = await tempDir('sv-vault-');
+  const dir = path.join(parent, 'absent');
+  assert.deepEqual(openVaultReadOnly({ dir, DatabaseSync }), { ok: false, reason: 'no-vault' });
+  assert.equal(existsSync(dir), false);
+  const empty = await tempDir('sv-vault-');
+  assert.deepEqual(openVaultReadOnly({ dir: empty, DatabaseSync }), { ok: false, reason: 'no-vault' });
+  assert.equal(existsSync(path.join(empty, 'vault.db')), false);
+});
+
+localTest('openVaultReadOnly reports a vault older or newer than this headjack as schema and applies no migration', async () => {
+  const older = await tempDir('sv-vault-');
+  const raw = new DatabaseSync(path.join(older, 'vault.db'));
+  raw.exec(`PRAGMA user_version = ${MIGRATIONS.length - 1}`);
+  raw.close();
+  assert.deepEqual(openVaultReadOnly({ dir: older, DatabaseSync }), { ok: false, reason: 'schema' });
+  const check = new DatabaseSync(path.join(older, 'vault.db'), { readOnly: true });
+  assert.equal({ ...check.prepare('PRAGMA user_version').get() }.user_version, MIGRATIONS.length - 1);
+  check.close();
+
+  const newer = await tempDir('sv-vault-');
+  const rawNewer = new DatabaseSync(path.join(newer, 'vault.db'));
+  rawNewer.exec(`PRAGMA user_version = ${MIGRATIONS.length + 1}`);
+  rawNewer.close();
+  assert.deepEqual(openVaultReadOnly({ dir: newer, DatabaseSync }), { ok: false, reason: 'schema' });
+});
+
+localTest('openVaultReadOnly opens a current vault for reads and refuses writes', async () => {
+  const dir = await tempDir('sv-vault-');
+  openVault({ dir, DatabaseSync }).close();
+  const opened = openVaultReadOnly({ dir, DatabaseSync });
+  assert.equal(opened.ok, true);
+  try {
+    assert.equal({ ...opened.db.prepare('select count(*) as n from skills').get() }.n, 0);
+    assert.throws(() => opened.db.exec("insert into sources (kind, url) values ('local', null)"), /readonly/i);
+  } finally {
+    opened.db.close();
+  }
+});
+
+localTest('openVaultReadOnly returns busy within 400 ms while another connection holds an exclusive lock', async () => {
+  const dir = await tempDir('sv-vault-');
+  openVault({ dir, DatabaseSync }).close();
+  const holder = new DatabaseSync(path.join(dir, 'vault.db'));
+  holder.exec('PRAGMA locking_mode = EXCLUSIVE');
+  holder.exec('BEGIN IMMEDIATE');
+  holder.exec("insert into sources (kind, url) values ('local', null)");
+  const started = performance.now();
+  let result;
+  try {
+    result = openVaultReadOnly({ dir, DatabaseSync });
+  } finally {
+    holder.exec('ROLLBACK');
+    holder.close();
+  }
+  const elapsed = performance.now() - started;
+  assert.deepEqual(result, { ok: false, reason: 'busy' });
+  assert.ok(elapsed < 400, `took ${elapsed} ms`);
 });
