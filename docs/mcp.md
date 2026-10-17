@@ -143,6 +143,8 @@ about its text:
 | `review_notes` | the reviewer's notes |
 | `scan_flags` | what the review scan found: a list of `{ rule, severity, file, line }`, with `match` (up to 120 characters) for a text rule |
 | `update_available` | true when upstream moved |
+| `queries_es_text` | the Spanish search queries generated for the skill, joined by spaces; `''` when none (always `''` in local mode for now) |
+| `enrichment_v` | the enrichment prompt version that produced `queries_es_text`, or null when there is none |
 | `skill_md` | the start of the root `SKILL.md`, or null |
 | `truncated` | true when `skill_md` was cut |
 | `content_status` | `available` when `skill_md` holds the text, else `unavailable` |

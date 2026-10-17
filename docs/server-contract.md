@@ -73,6 +73,8 @@ Several routes return a skill record. Its fields, as the handlers in `lib/handle
 | `scan_flags` | object[] | what the reviewer's scan found in the current version: each is `{ "rule", "severity", "file", "line" }` with `severity` `"high"` or `"low"`, and `match` (up to 120 characters) for text rules; `[]` when nothing was found |
 | `update_available` | boolean | whether the upstream source has a newer commit than the reviewed one |
 | `latest_commit` | string or null | the newest upstream commit the server has seen |
+| `queries_es_text` | string | the current version's Spanish enrichment queries, joined by a space; `""` when none. Detail only (see `GET /api/skills/{slug}`) |
+| `enrichment_v` | integer or null | the `ENRICHMENT_VERSION` of the prompt that wrote `queries_es_text`; null when that text is `""`. Detail only |
 
 **The content hash.** `sha256` is 64 lowercase hex characters computed over the version's files, in this exact way: sort the
 files by path (in UTF-16 code-unit order, the order of a JavaScript string comparison, which is byte order for ASCII paths);
@@ -142,6 +144,13 @@ tool of `headjack mcp`.
 Answer `200`: `{ "skill": { ... } }` with the skill record above. An unknown slug is `404 not_found`; the client reads that as
 "no such skill". The record describes the skill's current approved version, so a skill whose versions were all rejected has
 null version fields.
+
+The detail record also carries two enrichment fields (additive, not in the list rows):
+
+- `queries_es_text` (string): the current version's Spanish enrichment queries as stored, joined by a space; `""` when
+  the skill has none (no enrichment, or a failed one).
+- `enrichment_v` (integer or null): the `ENRICHMENT_VERSION` of the prompt that wrote `queries_es_text`; null when the
+  text is `""`. A local vault returns `""` and null until it keeps its own Spanish index.
 
 ### GET /api/skills/{slug}/download
 

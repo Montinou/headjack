@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRepo, repoForOwner, REPO_METHODS } from '../../lib/repo.mjs';
 import { ConflictError } from '../../lib/errors.mjs';
+import { ENRICHMENT_VERSION } from '../../lib/enrich-prompt.mjs';
 
 // Fake transaction handle (what withOwner passes to createRepo): records every query(text, params) and answers
 // via `respond(text, params)`; app.put_blob answers a fixed hash unless `respond` does. Transactions, rollback and
@@ -339,7 +340,7 @@ test('addQueryChunks replaces the version query chunks, tags and Spanish query t
   const inserts = pool.calls.filter((c) => c.text.startsWith('insert into chunks'));
   assert.deepEqual(inserts.map((c) => [c.params[2], c.params[4]]), [['q1', 'query'], ['q2', 'query']]);
   const upd = pool.calls.find((c) => c.text.startsWith('update skills set tags'));
-  assert.deepEqual(upd.params, [3, ['audio', 'podcast'], 'audio podcast', 'q2 otra']);
+  assert.deepEqual(upd.params, [3, ['audio', 'podcast'], 'audio podcast', 'q2 otra', ENRICHMENT_VERSION]);
   assertPlaceholders(pool.calls);
 });
 

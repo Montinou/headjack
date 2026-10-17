@@ -71,6 +71,13 @@
       "when": 1791971865442,
       "tag": "0009_rename_app_role",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792256775650,
+      "tag": "0010_enrichment_version",
+      "breakpoints": true
     }
   ]
 }
