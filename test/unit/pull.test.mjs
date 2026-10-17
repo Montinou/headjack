@@ -25,20 +25,23 @@ function fakeHosted() {
   const calls = { list: [], getSkill: [], download: [] };
   return {
     calls,
-    put(slug, { files = skillFiles(slug), approved = true, enrichment_v = null, queries_es_text = '', review_notes = 'reviewed: fine', scan_flags = ['net'], tags = ['audio'], tamper = null } = {}) {
-      skills.set(slug, { files, approved, tamper, detail: {
-        slug, name: slug, description: `${slug} does things`, kind: 'skill', plugin_slug: null, tags, quality: null,
+    put(slug, { files = skillFiles(slug), approved = true, enrichment_v = null, queries_es_text = '', review_notes = 'reviewed: fine', scan_flags = ['net'], tags = ['audio'], tamper = null, kind = 'skill', plugin_slug = null, sha256 = null, description = `${slug} does things` } = {}) {
+      // A plugin or plugin skill has no tarball: its sha256 is an identity hash and the download answers 409.
+      const noTarball = kind !== 'skill' || plugin_slug !== null;
+      const sha = approved ? (sha256 ?? hashFiles(files)) : null;
+      skills.set(slug, { files, approved, tamper, noTarball, detail: {
+        slug, name: slug, description, kind, plugin_slug, tags, quality: null,
         source_path: null, source_kind: 'github', source_url: `https://github.com/o/${slug}`, default_ref: 'HEAD',
-        commit_sha: 'a'.repeat(40), sha256: approved ? hashFiles(files) : null, size: 10, reviewed_at: '2026-10-01T00:00:00.000Z',
+        commit_sha: 'a'.repeat(40), sha256: sha, size: 10, reviewed_at: '2026-10-01T00:00:00.000Z',
         review_notes, scan_flags, update_available: false, latest_commit: null, queries_es_text, enrichment_v,
       } });
-      return approved ? hashFiles(files) : null;
+      return sha;
     },
     rawRow(row) { skills.set(row.slug, { row }); },
     async list({ limit = 50, offset = 0 } = {}) {
       calls.list.push({ limit, offset });
       const rows = [...skills.values()].map((s) => s.row ?? {
-        slug: s.detail.slug, name: s.detail.name, description: s.detail.description, kind: 'skill', plugin_slug: null,
+        slug: s.detail.slug, name: s.detail.name, description: s.detail.description, kind: s.detail.kind, plugin_slug: s.detail.plugin_slug,
         tags: s.detail.tags, quality: null, update_available: false, has_approved_version: s.approved,
       });
       return { skills: rows.slice(offset, offset + Math.min(limit, PAGE)), total: rows.length, limit, offset };
@@ -50,6 +53,7 @@ function fakeHosted() {
     async download(slug) {
       calls.download.push(slug);
       const s = skills.get(slug);
+      if (s.noTarball) throw Object.assign(new Error('this skill has no tarball'), { status: 409, code: 'conflict' });
       return { sha256: s.detail.sha256, tarball: pack(s.tamper ?? s.files) };
     },
   };
@@ -92,6 +96,10 @@ localTest('a listed row without an approved version is skipped silently and neve
     assert.equal(hosted.calls.getSkill.includes('draft'), false);
     assert.equal(await local.repo.getSkill('draft'), null);
     assert.equal(r.log.text().includes('draft'), false);
+    // Named by --replace, the same row is reported instead of ignored.
+    const named = await run(hosted, local, ['draft']);
+    assert.deepEqual(named.skipped, [{ slug: 'draft', reason: 'no approved version on hosted' }]);
+    assert.equal(hosted.calls.getSkill.includes('draft'), false);
   } finally {
     local.close();
   }
@@ -577,3 +585,145 @@ localTest('headjack pull: pulls into <state dir>/vault.db, exits 1 when an item 
     server.close();
   }
 });
+
+// --- plugins and plugin skills (download answers 409): stored from the detail metadata ---------------------------------------
+
+const hex = (c) => c.repeat(64);
+const PLUGIN_SKILL_NOTES = 'plugin skill: activated by enabling the plugin';
+const searchSlugs = async (local, q) => (await local.repo.searchSignals(q, { limit: 10 })).map((r) => r.slug);
+
+localTest('a plugin skill row is pulled without a download and found by searchSignals on a description word', async () => {
+  const hosted = fakeHosted();
+  const sha = hosted.put('p@m1:wrangle', {
+    kind: 'skill', plugin_slug: 'p@m1', sha256: hex('b'), description: 'Wrangle quokkas across the outback',
+    review_notes: PLUGIN_SKILL_NOTES, scan_flags: [], tags: ['marsupial'], enrichment_v: 2, queries_es_text: 'arrear quokkas',
+  });
+  const { local } = await vault();
+  try {
+    const r = await run(hosted, local);
+    assert.deepEqual({ pulled: r.pulled, skipped: r.skipped, failed: r.failed }, { pulled: ['p@m1:wrangle'], skipped: [], failed: [] });
+    assert.deepEqual(hosted.calls.download, [], 'no download is attempted for a plugin skill');
+
+    const [hit] = await local.repo.searchSignals('quokkas outback', {});
+    assert.equal(hit.slug, 'p@m1:wrangle');
+    assert.equal(hit.review, 'unreviewed', 'notes starting with "plugin skill:" make it unreviewed');
+    assert.equal(hit.kind, 'skill');
+    assert.equal(hit.plugin_slug, 'p@m1');
+    assert.deepEqual(await searchSlugs(local, 'marsupial'), ['p@m1:wrangle'], 'the tags are part of the one chunk');
+
+    const skill = await local.repo.getSkill('p@m1:wrangle');
+    assert.equal(skill.sha256, sha);
+    assert.equal(skill.review_notes, PLUGIN_SKILL_NOTES);
+    assert.deepEqual(skill.scan_flags, []);
+    assert.equal(skill.queries_es_text, 'arrear quokkas');
+    assert.equal(skill.enrichment_v, 2);
+    assert.deepEqual((await local.repo.listVersions('p@m1:wrangle')).map((v) => [v.status, v.current]), [['approved', true]]);
+    assert.equal((await local.repo.getPull('p@m1:wrangle')).sha256, sha);
+    assert.match(r.log.text(), /pulled p@m1:wrangle/);
+  } finally {
+    local.close();
+  }
+});
+
+localTest('a plugin row is pulled the same way; other hosted notes keep it approved', async () => {
+  const hosted = fakeHosted();
+  hosted.put('audio-tools@market', {
+    kind: 'plugin', sha256: hex('c'), description: 'Mix and master audio', tags: ['sound'],
+    review_notes: 'reviewed: careful', scan_flags: ['net'],
+  });
+  const { local } = await vault();
+  try {
+    const r = await run(hosted, local);
+    assert.deepEqual({ pulled: r.pulled, failed: r.failed }, { pulled: ['audio-tools@market'], failed: [] });
+    assert.deepEqual(hosted.calls.download, []);
+    const [hit] = await local.repo.searchSignals('master audio', {});
+    assert.equal(hit.slug, 'audio-tools@market');
+    assert.equal(hit.kind, 'plugin');
+    assert.equal(hit.review, 'approved');
+    assert.deepEqual(await searchSlugs(local, 'sound'), ['audio-tools@market']);
+    assert.deepEqual((await local.repo.getSkill('audio-tools@market')).scan_flags, ['net']);
+  } finally {
+    local.close();
+  }
+});
+
+localTest('plugin rows follow the pull decision table: unchanged, Spanish sync, new hosted version, local edit, --replace', async () => {
+  const hosted = fakeHosted();
+  const put = (o = {}) => hosted.put('p@m1:wrangle', { kind: 'skill', plugin_slug: 'p@m1', review_notes: PLUGIN_SKILL_NOTES, scan_flags: [], ...o });
+  put({ sha256: hex('b'), enrichment_v: 1, queries_es_text: 'arrear' });
+  const { local } = await vault();
+  try {
+    await run(hosted, local);
+    const same = await run(hosted, local);
+    assert.deepEqual({ pulled: same.pulled, unchanged: same.unchanged }, { pulled: [], unchanged: ['p@m1:wrangle'] });
+
+    put({ sha256: hex('b'), enrichment_v: 2, queries_es_text: 'arrear animales' });
+    const spanish = await run(hosted, local);
+    assert.deepEqual(spanish.pulled, ['p@m1:wrangle']);
+    assert.equal((await local.repo.getSkill('p@m1:wrangle')).queries_es_text, 'arrear animales');
+    assert.equal((await local.repo.listVersions('p@m1:wrangle')).length, 1);
+
+    // A new hosted version, nothing edited locally: stored as a new current version, still without a download.
+    put({ sha256: hex('d'), description: 'Herd wombats instead' });
+    const newer = await run(hosted, local);
+    assert.deepEqual(newer.pulled, ['p@m1:wrangle']);
+    assert.equal((await local.repo.getSkill('p@m1:wrangle')).sha256, hex('d'));
+    assert.deepEqual(await searchSlugs(local, 'wombats'), ['p@m1:wrangle']);
+    assert.deepEqual(await searchSlugs(local, 'quokkas'), []);
+    assert.equal((await local.repo.getPull('p@m1:wrangle')).sha256, hex('d'));
+
+    // A local edit plus a newer hosted version is skipped; --replace takes hosted.
+    await local.api.publish({
+      slug: 'p@m1:wrangle', name: 'p@m1:wrangle', description: 'my own words', kind: 'skill', plugin_slug: 'p@m1', tags: [],
+      source: { kind: 'local' }, sha256: hex('e'), status: 'approved', review_notes: 'local edit', scan_flags: [], chunks: ['my own words'],
+    }, null);
+    put({ sha256: hex('f'), description: 'Hosted moved on' });
+    const skipped = await run(hosted, local);
+    assert.deepEqual(skipped.skipped, [{ slug: 'p@m1:wrangle', reason: editedMessage('p@m1:wrangle') }]);
+    assert.equal((await local.repo.getSkill('p@m1:wrangle')).sha256, hex('e'));
+    const replaced = await run(hosted, local, ['p@m1:wrangle']);
+    assert.deepEqual({ pulled: replaced.pulled, skipped: replaced.skipped }, { pulled: ['p@m1:wrangle'], skipped: [] });
+    assert.equal((await local.repo.getSkill('p@m1:wrangle')).sha256, hex('f'));
+    assert.equal((await local.repo.getPull('p@m1:wrangle')).sha256, hex('f'));
+    assert.deepEqual(hosted.calls.download, []);
+  } finally {
+    local.close();
+  }
+});
+
+localTest('a plugin row the vault rejects fails only that item and stores nothing', async () => {
+  const hosted = fakeHosted();
+  hosted.put('p@m1:broken', { kind: 'skill', plugin_slug: 'p@m1', sha256: 'not-a-hash', review_notes: PLUGIN_SKILL_NOTES });
+  hosted.put('p@m1:fine', { kind: 'skill', plugin_slug: 'p@m1', sha256: hex('b'), review_notes: PLUGIN_SKILL_NOTES });
+  const { local } = await vault();
+  try {
+    const r = await run(hosted, local);
+    assert.deepEqual(r.pulled, ['p@m1:fine']);
+    assert.deepEqual(r.failed.map((f) => f.slug), ['p@m1:broken']);
+    assert.match(r.failed[0].reason, /sha256 must be 64 hex chars/);
+    assert.equal(await local.repo.getSkill('p@m1:broken'), null);
+    assert.equal(await local.repo.getPull('p@m1:broken'), null);
+  } finally {
+    local.close();
+  }
+});
+
+localTest('headjack pull exits 1 when a plugin row failed', async () => {
+  const hosted = fakeHosted();
+  hosted.put('p@m1:broken', { kind: 'skill', plugin_slug: 'p@m1', sha256: 'not-a-hash', review_notes: PLUGIN_SKILL_NOTES });
+  hosted.put('p@m1:fine', { kind: 'skill', plugin_slug: 'p@m1', sha256: hex('b'), review_notes: PLUGIN_SKILL_NOTES });
+  const server = await serve(hosted);
+  const home = await tempDir('sv-pull-home-');
+  const state = await tempDir('sv-pull-state-');
+  const env = { HOME: home, HEADJACK_HOME: state, HEADJACK_TOKEN: 'test-token', HEADJACK_URL: `http://127.0.0.1:${server.address().port}` };
+  try {
+    const r = await runCli(['pull'], env);
+    assert.equal(r.code, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /pulled p@m1:fine/);
+    assert.match(r.stdout, /failed p@m1:broken: /);
+    assert.match(r.stdout, /pulled: 1, unchanged: 0, skipped: 0, failed: 1/);
+  } finally {
+    server.close();
+  }
+});
+

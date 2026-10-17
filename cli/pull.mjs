@@ -1,6 +1,7 @@
-// `headjack pull` (spec §9): copies the user's approved hosted skills into the local vault. Standalone skills only here:
-// the tarball's content hash must equal the hosted sha256, and the local version goes through the local publish path
-// (files → chunks), like import. Local edits are never overwritten silently.
+// `headjack pull` (spec §9): copies the user's approved hosted skills into the local vault. A standalone skill's tarball
+// must hash to the hosted sha256, and its local version goes through the local publish path (files → chunks), like
+// import. Plugins and plugin skills have no tarball (the download answers 409): they are stored from the detail
+// metadata with one chunk, so they stay searchable. Local edits are never overwritten silently.
 import { hashFiles } from '../lib/hash.mjs';
 import { unpack } from '../lib/tar.mjs';
 import { readSkillInfo, chunkSkill } from '../lib/skillmd.mjs';
@@ -55,12 +56,13 @@ export async function pull({ hosted, local, replace = new Set(), log = () => {} 
       if (listed.has(row.slug)) continue;
       listed.add(row.slug);
     }
-    // Only approved skills are pulled; the rest are not mentioned.
-    if (row?.has_approved_version !== true) continue;
+    // Only approved skills are pulled; the rest are not mentioned, except a --replace naming one.
+    if (row?.has_approved_version !== true) {
+      if (replace.has(row?.slug)) { report.skipped.push({ slug: row.slug, reason: 'no approved version on hosted' }); log(`--replace ${row.slug}: no approved version on hosted`); }
+      continue;
+    }
     const slug = row.slug;
     if (typeof slug !== 'string' || !SLUG_RE.test(slug)) { fail('<invalid slug>', 'invalid slug from the hosted vault'); continue; }
-    // Plugins and plugin skills have no tarball (the download answers 409).
-    if (row.kind !== 'skill' || row.plugin_slug) { skip(slug, 'plugins and plugin skills are not pulled yet'); continue; }
     try {
       const outcome = await pullSkill({ hosted, local, slug, replace: replace.has(slug) });
       if (outcome.skipped) skip(slug, outcome.skipped);
@@ -115,13 +117,29 @@ async function pullSkill({ hosted, local, slug, replace }) {
     if (edited && !replace) return { pulled: false };
   }
 
-  const { tarball } = await hosted.download(slug, { maxBytes: MAX_TARBALL_BYTES });
-  const files = unpack(tarball, { maxOutputLength: MAX_UNPACKED_BYTES });
-  const sha256 = hashFiles(files);
-  if (sha256 !== detail.sha256) return { skipped: MISMATCH };
-  const info = readSkillInfo(files, slug);
+  // The only step that differs by kind: where the content comes from.
   const tags = Array.isArray(detail.tags) ? detail.tags : [];
-  const chunks = chunkSkill(info);
+  const standalone = detail.kind === 'skill' && !detail.plugin_slug;
+  let tarball = null;
+  let sha256 = detail.sha256;
+  let info = { name: detail.name, description: detail.description };
+  // Plugin rows take name, description and tags from the hosted detail; the re-point path below does not run the
+  // manifest validation that publish does, so check them here.
+  if (typeof info.name !== 'string' || !info.name.trim() || typeof info.description !== 'string' || !tags.every((t) => typeof t === 'string')) {
+    throw new Error('the hosted detail has no valid name, description or tags');
+  }
+  let chunks;
+  if (standalone) {
+    ({ tarball } = await hosted.download(slug, { maxBytes: MAX_TARBALL_BYTES }));
+    const files = unpack(tarball, { maxOutputLength: MAX_UNPACKED_BYTES });
+    sha256 = hashFiles(files);
+    if (sha256 !== detail.sha256) return { skipped: MISMATCH };
+    info = readSkillInfo(files, slug);
+    chunks = chunkSkill(info);
+  } else {
+    // No content to hash: a plugin's sha256 is an identity hash, stored as hosted gives it.
+    chunks = [`${info.name}\n${info.description}\n${tags.join(' ')}`];
+  }
 
   // A local import or review that landed since the check above wins: it is not replaced.
   if (((await local.repo.getSkill(slug))?.sha256 ?? null) !== localSha) return { skipped: editedLocally(slug) };
@@ -136,7 +154,7 @@ async function pullSkill({ hosted, local, slug, replace }) {
     if (!ids) throw new Error('the vault holds this content as a rejected version; it is not made current');
   } else {
     ids = await local.api.publish({
-      slug, name: info.name, description: info.description, kind: 'skill', tags,
+      slug, name: info.name, description: info.description, kind: detail.kind, plugin_slug: detail.plugin_slug ?? null, tags,
       source: PULL_SOURCE, source_path: detail.source_path ?? null, commit_sha: detail.commit_sha ?? null, sha256,
       status: 'approved', review_notes: detail.review_notes ?? null,
       scan_flags: Array.isArray(detail.scan_flags) ? detail.scan_flags : [], chunks,
