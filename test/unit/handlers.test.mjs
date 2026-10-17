@@ -119,6 +119,77 @@ test('search validates q, k and kind', async () => {
   }
 });
 
+const post = (body, init = {}) => req('/api/search', {
+  method: 'POST',
+  ...init,
+  headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
+  body: typeof body === 'string' ? body : JSON.stringify(body),
+});
+
+test('POST /api/search answers like GET with the query in the body', async () => {
+  const { h } = make();
+  const viaGet = await (await h.search(req('/api/search?q=render%20video&k=3'))).json();
+  const res = await h.search(post({ q: 'render video', k: 3 }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), viaGet);
+  const plugins = await (await h.search(post({ q: 'x', kind: 'plugin' }))).json();
+  assert.deepEqual(plugins.results.map((r) => r.slug), ['noncore-plugin@example']);
+});
+
+test('POST /api/search passes body tags to the text search like GET ?tag', async () => {
+  const seen = [];
+  const { h } = make({ searchText: async (q, n, tags) => { seen.push(tags); return [3, 1]; } });
+  await h.search(req('/api/search?q=x&tag=Three.js'));
+  await h.search(post({ q: 'x', tags: ['Three.js'] }));
+  assert.deepEqual(seen[1], seen[0]);
+  assert.deepEqual(seen[1], ['threejs']);
+});
+
+test('POST /api/search rejects an oversized body with 413 and a non-JSON body with 400', async () => {
+  const { h } = make();
+  const big = await h.search(post({ q: 'x'.repeat(5000) }));
+  assert.equal(big.status, 413);
+  assert.equal((await big.json()).error.code, 'payload_too_large');
+  const chunked = await h.search(post(JSON.stringify({ q: 'x'.repeat(5000) }), { headers: { 'content-length': '10' } }));
+  assert.equal(chunked.status, 413);
+  for (const body of ['not json', '', '[1]', 'null', '"q"']) {
+    const res = await h.search(post(body));
+    assert.equal(res.status, 400, body);
+    assert.equal((await res.json()).error.code, 'bad_request');
+  }
+});
+
+test('POST /api/search validates q, k, kind and tags like GET', async () => {
+  const { h } = make();
+  const cases = [
+    [{ k: 30, q: 'x' }, 'k must be an integer in [1,25]'],
+    [{ q: 'x', k: '3' }, 'k must be an integer in [1,25]'],
+    [{ q: 'x', k: 2.5 }, 'k must be an integer in [1,25]'],
+    [{ q: '  ' }, 'q is required'],
+    [{ q: 7 }, 'q is required'],
+    [{}, 'q is required'],
+    [{ q: 'x', kind: 'mcp' }, 'kind must be skill or plugin'],
+    [{ q: 'x', kind: 3 }, 'kind must be skill or plugin'],
+  ];
+  for (const [body, message] of cases) {
+    const res = await h.search(post(body));
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.equal((await res.json()).error.message, message, JSON.stringify(body));
+  }
+  const tagMessage = (await (await h.search(req('/api/search?q=x&tag=!!!'))).json()).error.message;
+  for (const tags of [['ok', ''], ['!!!'], 'ok', [3], Array.from({ length: 50 }, (_, i) => `t${i}`)]) {
+    const res = await h.search(post({ q: 'x', tags }));
+    assert.equal(res.status, 400, JSON.stringify(tags));
+    assert.equal((await res.json()).error.message, tagMessage);
+  }
+});
+
+test('POST /api/search requires credentials', async () => {
+  const { h } = make();
+  const res = await h.search(new Request('https://sv.test/api/search', { method: 'POST', body: '{"q":"x"}' }));
+  assert.equal(res.status, 401);
+});
+
 test('getSkill returns 200 or 404', async () => {
   const { h } = make();
   assert.equal((await (await h.getSkill(req('/api/skills/remotion-render'))).json()).skill.slug, 'remotion-render');

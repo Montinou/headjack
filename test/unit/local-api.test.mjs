@@ -67,6 +67,11 @@ localTest('the in-process api publishes, searches, reads, downloads and lists ve
     assert.deepEqual(await api.updates(), []);
     assert.equal(await api.installEvent({ slug: 'zebra-tool', kind: 'skill', source: 'manual' }), undefined);
 
+    const posted = await route(`${URL_BASE}/api/search`, { method: 'POST', body: JSON.stringify({ q: 'zebra' }) });
+    assert.equal(posted.status, 200);
+    assert.deepEqual((await posted.json()).results.map((r) => r.slug), ['zebra-tool']);
+    assert.equal((await route(`${URL_BASE}/api/search`, { method: 'PUT', body: '{}' })).status, 404);
+
     assert.equal((await route(`${URL_BASE}/api/unknown`, {})).status, 404);
     assert.equal((await route(`${URL_BASE}/api/skills/zebra-tool/other`, {})).status, 404);
   } finally {
@@ -195,6 +200,28 @@ localTest('the in-process api lists published skills with kind and tag filters a
 
     await assert.rejects(api.list({ kind: 'bogus' }), (e) => e instanceof ApiError && e.status === 400);
     assert.equal((await route(`${URL_BASE}/api/skills`, { method: 'DELETE' })).status, 404);
+  } finally {
+    close();
+  }
+});
+
+localTest('search results carry a review status and never review_notes', async () => {
+  const dir = await tempDir('sv-local-review-');
+  const { api, close } = await createLocalApi({ dir });
+  try {
+    const grand = [file('SKILL.md', '---\nname: okapi-old\ndescription: Tracks okapi sightings\n---\n# Use\nCount okapis.')];
+    const rev = [file('SKILL.md', '---\nname: okapi-new\ndescription: Tracks okapi sightings\n---\n# Use\nCount okapis.')];
+    const mk = (slug, files, review_notes) => ({
+      slug, name: slug, description: 'Tracks okapi sightings', kind: 'skill', tags: [], source: { kind: 'local' },
+      sha256: hashFiles(files), status: 'approved', review_notes, scan_flags: [], chunks: [`${slug}: Tracks okapi sightings`, 'Count okapis.'],
+    });
+    await api.publish(mk('okapi-old', grand, 'grandfathered: installed before the vault, not reviewed'), pack(grand));
+    await api.publish(mk('okapi-new', rev, 'reviewed by hand'), pack(rev));
+    const results = await api.search('okapi');
+    const by = Object.fromEntries(results.map((r) => [r.slug, r]));
+    assert.equal(by['okapi-old'].review, 'unreviewed');
+    assert.equal(by['okapi-new'].review, 'approved');
+    assert.ok(results.every((r) => !('review_notes' in r)));
   } finally {
     close();
   }
