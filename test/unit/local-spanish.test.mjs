@@ -108,3 +108,32 @@ localTest('publish of a new approved version clears the Spanish data so --stale 
     db.close();
   }
 });
+
+localTest('listEnrichTargets: default is skills without Spanish text; slugs and stale narrow it; it reads the current body', async () => {
+  const { db, repo, skillId, versionId } = await fixture();
+  try {
+    const old = await repo.publish(version('old-v0'));
+    await repo.setSpanish(old.skillId, old.versionId, 'texto de una version vieja', 0);
+    const fresh = await repo.publish(version('fresh-v1'));
+    await repo.setSpanish(fresh.skillId, fresh.versionId, 'texto al dia', 1);
+    await repo.publish(version('rejected-only', { status: 'rejected' }));
+
+    const slugs = (rows) => rows.map((r) => r.slug);
+    // Default: Spanish text still empty (mixer only); a rejected-only skill has no current version and never shows.
+    assert.deepEqual(slugs(await repo.listEnrichTargets({})), ['mixer']);
+    // --stale: enrichment_v null or older than the current version of the prompt (1).
+    assert.deepEqual(slugs(await repo.listEnrichTargets({ stale: true })), ['mixer', 'old-v0']);
+    // Explicit slugs ignore the empty-text default, and stale still narrows them.
+    assert.deepEqual(slugs(await repo.listEnrichTargets({ slugs: ['fresh-v1', 'mixer'] })), ['mixer', 'fresh-v1']);
+    assert.deepEqual(slugs(await repo.listEnrichTargets({ slugs: ['fresh-v1', 'mixer'], stale: true })), ['mixer']);
+    assert.deepEqual(await repo.listEnrichTargets({ slugs: ['nope', 'rejected-only'] }), []);
+
+    const [row] = await repo.listEnrichTargets({ slugs: ['mixer'] });
+    assert.deepEqual({ ...row }, {
+      id: skillId, version_id: versionId, slug: 'mixer', name: 'mixer', description: 'mixer description',
+      body: 'mixer body', enrichment_v: null,
+    });
+  } finally {
+    db.close();
+  }
+});
