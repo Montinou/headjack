@@ -189,11 +189,13 @@ function need(value, usage) {
 }
 
 async function main(argv) {
+  // `hook` goes before parseArgs and the --help branch: a hook prints nothing and exits 0 whatever it is given, so an
+  // unknown option or --help must never reach the USAGE text or a non-zero exit.
+  if (argv[0] === 'hook') return hookCommand(argv[1]);
   let parsed;
   try { parsed = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true }); } catch (e) { throw new UserError(e.message); }
   const { values: o, positionals: [cmd, ...args] } = parsed;
   if (!cmd || o.help) { console.log(USAGE); return 0; }
-  if (cmd === 'hook') return hookCommand(args[0]);
 
   const home = process.env.HOME;
   // One readline and one shared line iterator for every prompt: rl.question() loses the lines a pipe delivers in a

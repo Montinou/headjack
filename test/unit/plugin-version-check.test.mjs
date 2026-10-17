@@ -26,6 +26,7 @@ async function fixture(overrides = {}) {
     'lib/b.mjs': 'export const b = 1;\n',
     'lib/unshipped.mjs': 'export const u = 1;\n',
     'skill-finder/SKILL.md': '# skill\n',
+    'plugin-hooks/hooks.json': '{}\n',
     '.claude-plugin/plugin.json': manifest('0.3.0'),
     'docs/x.md': 'docs\n',
     ...overrides,
@@ -42,7 +43,7 @@ async function commit(cwd, message = 'change') {
   git(cwd, 'commit', '-q', '-m', message);
 }
 
-test('shippedFiles lists the launcher, the CLI closure, skill-finder and the plugin manifest', async () => {
+test('shippedFiles lists the launcher, the CLI closure, skill-finder, plugin-hooks and the plugin manifest', async () => {
   const cwd = await fixture();
   assert.deepEqual(await shippedFiles({ cwd, ref: 'main' }), [
     '.claude-plugin/plugin.json',
@@ -50,6 +51,7 @@ test('shippedFiles lists the launcher, the CLI closure, skill-finder and the plu
     'cli/headjack.mjs',
     'lib/a.mjs',
     'lib/b.mjs',
+    'plugin-hooks/hooks.json',
     'skill-finder/SKILL.md',
   ]);
 });
@@ -178,4 +180,16 @@ test('the CLI works from a subdirectory of the repository', async () => {
   assert.equal(code, 1, out);
   assert.match(out, /lib\/b\.mjs/);
   assert.deepEqual((await shippedFiles({ cwd: sub, ref: 'main' })).includes('lib/b.mjs'), true, 'shippedFiles also resolves the repository root');
+});
+
+test('a change under plugin-hooks/ without a version bump is not ok and names the file; with a bump it is ok', async () => {
+  const cwd = await fixture();
+  await writeFile(path.join(cwd, 'plugin-hooks/hooks.json'), '{"hooks":{}}\n');
+  await commit(cwd);
+  const res = await checkPluginVersion({ cwd, base: 'main' });
+  assert.equal(res.ok, false);
+  assert.equal(res.file, 'plugin-hooks/hooks.json');
+  await writeFile(path.join(cwd, '.claude-plugin/plugin.json'), manifest('0.3.1'));
+  await commit(cwd, 'bump');
+  assert.equal((await checkPluginVersion({ cwd, base: 'main' })).ok, true);
 });

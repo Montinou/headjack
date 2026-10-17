@@ -8,6 +8,8 @@ import { skillsDir, claudeSettingsPath, requireHarnessFilter, resolveHarnessDir,
 import { excludedRootOf } from './scan.mjs';
 import { excludedRootsFor } from './local-config.mjs';
 import { setPluginsEnabled, readEnabledPlugins } from './settings.mjs';
+import { appendEvent } from '../lib/suggest-log.mjs';
+import { SESSION_ID_RE } from '../lib/suggest-session.mjs';
 
 export const storeDir = (dir) => path.join(dir, 'store');
 const exists = (p) => access(p).then(() => true, () => false);
@@ -94,6 +96,11 @@ export async function add(slug, opts, ctx) {
   if (managed) {
     try { await ctx.api.installEvent({ slug, kind, source: opts.source ?? 'manual' }); } catch { /* ignored */ }
   }
+  // The add event feeds the outcome report (spec §5.1). Best effort: appendEvent never throws, and nothing here can change
+  // the exit code. It carries a slug and a source label, never prompt text.
+  const sessionId = ctx.env?.CLAUDE_CODE_SESSION_ID;
+  const session = typeof sessionId === 'string' && SESSION_ID_RE.test(sessionId) ? sessionId : null;
+  await appendEvent(ctx.dir, { type: 'add', session, at: new Date().toISOString(), slug, source: opts.source ?? 'manual' });
   return { managed, kind };
 }
 
