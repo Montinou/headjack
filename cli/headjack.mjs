@@ -11,7 +11,7 @@ import { stateDir } from './local-config.mjs';
 import { guardLocal, openApi } from './connect.mjs';
 import { exitCodeFor } from './exit.mjs';
 import { activeKeys, isActive } from './active.mjs';
-import { add, remove, list, verify, gc, cleanup } from './install.mjs';
+import { add, remove, list, verify, gc, cleanup, parseDuration } from './install.mjs';
 import { review } from './review.mjs';
 import { planImport, runImport, trim, restore } from './import.mjs';
 import { exec } from './exec.mjs';
@@ -29,6 +29,7 @@ const USAGE = `headjack — personal skill vault
   headjack cleanup [--harness <id,…>] [--older-than 12h|30m|2d] [--dry-run]
   headjack suggest "<text>" [--json] [--explain] [--session-id <id>]
   headjack suggest --enable [--hosted|--local] | --disable
+  headjack suggest --report [--since 7d|12h|30m] [--json]
   headjack hook prompt|warmup|skill-used   (internal: run by the Claude Code hooks, not by hand)
   headjack list [--active] [--json]
   headjack harness detect
@@ -44,7 +45,8 @@ const USAGE = `headjack — personal skill vault
 
 suggest searches the vault for skills that fit <text> and prints the ones you do not have (nothing when the vault is
 missing). --enable / --disable turn the prompt hook's suggestions on and off in <state dir>/config.json; --hosted / --local
-pick the search the hook uses. --session-id <id> remembers what was suggested for that session.
+pick the search the hook uses. --session-id <id> remembers what was suggested for that session. --report prints, from the
+suggestion log, how many suggestions were taken (hit), left alone (ignored) or beaten by a skill you added or used anyway (missed).
 
 Harness ids: claude, codex, grok and any that "harness detect" finds (gemini, cursor, windsurf, …);
 "all" = every detected one. --session marks the install so that "cleanup" removes it.
@@ -88,6 +90,8 @@ const OPTIONS = {
   disable: { type: 'boolean' },
   hosted: { type: 'boolean' },
   local: { type: 'boolean' },
+  report: { type: 'boolean' },
+  since: { type: 'string' },
 };
 
 const SOURCES = ['suggest', 'plan', 'manual'];
@@ -127,7 +131,7 @@ function mcpEnvironment(env) {
   return { mode, origin };
 }
 
-const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable';
+const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable | suggest --report [--since <dur>] [--json]';
 const dash = (v) => (v === null || v === undefined ? '-' : v);
 
 // One --explain line per candidate: the signals, then what the filters decided.
@@ -255,6 +259,18 @@ async function main(argv) {
       }
       case 'suggest': {
         const text = args.join(' ').trim();
+        if (o.since !== undefined && !o.report) throw new UserError('--since goes with --report (headjack suggest --report --since 7d)');
+        if (o.report) {
+          if (text || o.enable || o.disable || o.hosted || o.local || o.explain || o['session-id'] !== undefined) throw new UserError(`--report takes no text and no other suggest option except --since and --json (usage: headjack ${SUGGEST_USAGE})`);
+          const [{ readEvents }, { outcomes, summarize, formatReport, WINDOW_MS }] = await Promise.all([import('../lib/suggest-log.mjs'), import('../lib/suggest-report.mjs')]);
+          const since = o.since === undefined ? undefined : Date.now() - parseDuration(o.since, '--since');
+          // Events older than --since still count as context for the ones after it; only the report is trimmed.
+          const events = await readEvents(ctx.dir, since === undefined ? {} : { since: new Date(since - WINDOW_MS) });
+          const result = outcomes(events, { since });
+          const rows = summarize(result, events);
+          console.log(o.json ? JSON.stringify({ ...result, rows }, null, 2) : formatReport(rows, result, { sinceLabel: o.since }));
+          return 0;
+        }
         if (o.enable && o.disable) throw new UserError('--enable and --disable cannot go together');
         if (o.hosted && o.local) throw new UserError('--hosted and --local cannot go together');
         if ((o.hosted || o.local) && !o.enable) throw new UserError('--hosted and --local go with --enable (headjack suggest --enable --hosted)');
