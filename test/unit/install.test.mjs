@@ -658,8 +658,15 @@ test('a looping link is reported unmanaged, and remove, cleanup and verify neith
   assert.match(ctx.log.text(), /is no longer an headjack symlink/);
 });
 
+// Suggestions switched on in the state dir, which is what lets `add` write its event.
+async function enableSuggestions(ctx) {
+  await mkdir(ctx.dir, { recursive: true });
+  await writeFile(path.join(ctx.dir, 'config.json'), JSON.stringify({ suggest: { enabled: true } }));
+}
+
 test('a successful add appends one add event with the session, slug and source, and nothing else', async () => {
   const { ctx } = await setup();
+  await enableSuggestions(ctx);
   ctx.env = { CLAUDE_CODE_SESSION_ID: 'sess-1234' };
   await add('demo', { source: 'suggest' }, ctx);
   const events = await readEvents(ctx.dir);
@@ -675,6 +682,7 @@ test('a successful add appends one add event with the session, slug and source, 
 test('the add event has a null session when CLAUDE_CODE_SESSION_ID is missing or not a valid id, and source defaults to manual', async () => {
   for (const env of [{}, { CLAUDE_CODE_SESSION_ID: '../../etc' }, { CLAUDE_CODE_SESSION_ID: 'x'.repeat(65) }, { CLAUDE_CODE_SESSION_ID: '' }]) {
     const { ctx } = await setup();
+    await enableSuggestions(ctx);
     ctx.env = env;
     await add('demo', {}, ctx);
     const [event] = await readEvents(ctx.dir);
@@ -683,8 +691,24 @@ test('the add event has a null session when CLAUDE_CODE_SESSION_ID is missing or
   }
 });
 
+test('add writes no event and creates no suggest directory while suggestions were never enabled', async () => {
+  for (const config of [undefined, { suggest: { enabled: false } }, { suggest: {} }]) {
+    const { ctx } = await setup();
+    if (config !== undefined) {
+      await mkdir(ctx.dir, { recursive: true });
+      await writeFile(path.join(ctx.dir, 'config.json'), JSON.stringify(config));
+    }
+    ctx.env = { CLAUDE_CODE_SESSION_ID: 'sess-1234' };
+    await add('demo', { source: 'suggest' }, ctx);
+    assert.ok(await exists(path.join(ctx.home, '.claude', 'skills', 'demo')));
+    assert.equal(await exists(path.join(ctx.dir, 'suggest')), false, JSON.stringify(config));
+    assert.deepEqual(await readEvents(ctx.dir), []);
+  }
+});
+
 test('a failed add writes no add event', async () => {
   const { ctx } = await setup();
+  await enableSuggestions(ctx);
   await assert.rejects(add('nope', {}, ctx));
   ctx.api.failDownload('demo', new Error('network down'));
   await assert.rejects(add('demo', {}, ctx));
@@ -693,6 +717,7 @@ test('a failed add writes no add event', async () => {
 
 test('a logging failure never fails the add', async () => {
   const { ctx } = await setup();
+  await enableSuggestions(ctx);
   // <dir>/suggest is a file, so the log cannot be created.
   await mkdir(ctx.dir, { recursive: true });
   await writeFile(path.join(ctx.dir, 'suggest'), 'not a directory');

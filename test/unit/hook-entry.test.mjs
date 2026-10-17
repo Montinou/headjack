@@ -84,8 +84,8 @@ localTest('prompt: suggest enabled loads the pipeline and prints the hook JSON n
   if (traceSupported) assert.ok(loaded(res, 'lib/suggest.mjs') && loaded(res, 'cli/hook.mjs'));
 });
 
-localTest('skill-used: runs whether or not suggestions are enabled, maps the slug and loads no pipeline', async () => {
-  const box = await sandbox();
+localTest('skill-used: with suggestions enabled it maps the slug, logs one invoke and loads no pipeline', async () => {
+  const box = await sandbox({ config: { suggest: { enabled: true } } });
   await buildSyntheticVault(box.dir, { skills: 5, planted: [PLANTED] });
   const res = await runEntry(['skill-used'], box, { stdin: skillJson });
   assert.deepEqual([res.code, res.stdout, res.stderr], [0, '', '']);
@@ -95,6 +95,16 @@ localTest('skill-used: runs whether or not suggestions are enabled, maps the slu
   if (traceSupported) {
     assert.ok(loaded(res, 'cli/hook.mjs'));
     assert.equal(loaded(res, 'lib/suggest.mjs'), false, 'the pipeline stays unloaded');
+  }
+});
+
+localTest('skill-used: with suggestions never enabled it writes nothing, not even the suggest directory', async () => {
+  for (const config of [undefined, { suggest: { enabled: false } }, { suggest: {} }, { unrelated: true }]) {
+    const box = await sandbox({ config });
+    await buildSyntheticVault(box.dir, { skills: 5, planted: [PLANTED] });
+    const res = await runEntry(['skill-used'], box, { stdin: skillJson, trace: false });
+    assert.deepEqual([res.code, res.stdout, res.stderr], [0, '', ''], JSON.stringify(config));
+    assert.equal(await fsp.stat(path.join(box.dir, 'suggest')).catch(() => null), null, `no suggest directory (${JSON.stringify(config)})`);
   }
 });
 

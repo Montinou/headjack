@@ -118,6 +118,15 @@ localTest('openVaultReadOnly reports a vault older or newer than this headjack a
   assert.deepEqual(openVaultReadOnly({ dir: newer, DatabaseSync }), { ok: false, reason: 'schema' });
 });
 
+localTest('openVaultReadOnly reports a file SQLite cannot read as damaged, not as a schema mismatch, and leaves it untouched', async () => {
+  const dir = await tempDir('sv-vault-');
+  const file = path.join(dir, 'vault.db');
+  const junk = Buffer.from('these are my notes, not a database\n'.repeat(40));
+  await writeFile(file, junk);
+  assert.deepEqual(openVaultReadOnly({ dir, DatabaseSync }), { ok: false, reason: 'damaged' });
+  assert.deepEqual(await readFile(file), junk);
+});
+
 localTest('openVaultReadOnly opens a current vault for reads and refuses writes', async () => {
   const dir = await tempDir('sv-vault-');
   openVault({ dir, DatabaseSync }).close();

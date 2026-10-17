@@ -150,7 +150,7 @@ The detail record also carries two enrichment fields (additive, not in the list 
 - `queries_es_text` (string): the current version's Spanish enrichment queries as stored, joined by a space; `""` when
   the skill has none (no enrichment, or a failed one).
 - `enrichment_v` (integer or null): the `ENRICHMENT_VERSION` of the prompt that wrote `queries_es_text`; null when the
-  text is `""`. A local vault returns `""` and null until it keeps its own Spanish index.
+  text is `""`. A local vault returns `""` and null for a skill that has no Spanish text yet; `headjack enrich` and `headjack pull` fill them.
 
 ### GET /api/skills/{slug}/download
 

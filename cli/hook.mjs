@@ -70,8 +70,9 @@ const validSession = (input) => (typeof input?.session_id === 'string' && SESSIO
 
 // ---- prompt ----
 
-async function promptHook({ stdin, env, home, dir, now, adapters }) {
-  const t0 = performance.now();
+// `t0` is the instant the deadline and latency_ms count from, on the performance.now() clock (milliseconds since the
+// process started): the hook process passes 0, so Node startup, the stdin read and the imports count against the deadline.
+async function promptHook({ stdin, env, home, dir, now, adapters, t0 }) {
   const input = parseInput(stdin);
   const sessionId = validSession(input);
   const store = sessionStore(dir, { now });
@@ -119,7 +120,7 @@ async function promptHook({ stdin, env, home, dir, now, adapters }) {
     }
   }
 
-  // The search is raced against the deadline, which is measured from the start of the hook. A hosted call is aborted; a
+  // The search is raced against the deadline, which is measured from t0 (the start of the process for a hook process). A hosted call is aborted; a
   // local one is synchronous SQLite bounded by its busy timeout, so a late answer is discarded instead. The timer is
   // cleared as soon as the race ends, so nothing else keeps the process alive.
   const abort = new AbortController();
@@ -232,12 +233,13 @@ async function skillUsedHook({ stdin, home, dir, now }) {
   await appendEvent(dir, { type: 'invoke', session: validSession(input) ?? null, at: new Date(now()).toISOString(), skill, slug });
 }
 
-// runHook(name, { stdin, env, home, dir, now, adapters }) resolves to { stdout } and never rejects: any exception gives
+// runHook(name, { stdin, env, home, dir, now, adapters, t0 }) resolves to { stdout } and never rejects: any exception gives
 // an empty stdout and one hook.log line. `now` is the clock (the breaker's); `adapters` replaces the search adapters
-// (tests). Any other name is a no-op.
-export async function runHook(name, { stdin = '', env = process.env, home = env.HOME, dir, now = Date.now, adapters } = {}) {
+// (tests); `t0` is where the prompt deadline starts on the performance.now() clock (default: this call; hookMain passes 0,
+// the start of the process). Any other name is a no-op.
+export async function runHook(name, { stdin = '', env = process.env, home = env.HOME, dir, now = Date.now, adapters, t0 = performance.now() } = {}) {
   try {
-    if (name === 'prompt') return { stdout: await promptHook({ stdin, env, home, dir, now, adapters }) };
+    if (name === 'prompt') return { stdout: await promptHook({ stdin, env, home, dir, now, adapters, t0 }) };
     if (name === 'warmup') await warmupHook({ stdin, env, home, dir, now, adapters });
     if (name === 'skill-used') await skillUsedHook({ stdin, home, dir, now });
     return { stdout: '' };

@@ -1,12 +1,12 @@
 // The process the plugin hooks run: `node cli/hook-entry.mjs prompt|warmup|skill-used` (spec §4.1). The hooks fire on every
 // Claude Code prompt, also for people who never turned suggestions on, so this file imports almost nothing: a disabled
-// `prompt` or `warmup` ends after reading the suggest config, without loading cli/hook.mjs or the pipeline behind it.
-// `skill-used` is local and cheap, so it always runs. A hook never blocks or breaks a session: every failure is no output
+// hook (`prompt`, `warmup` and `skill-used` alike) ends after reading the suggest config, without loading cli/hook.mjs or
+// the pipeline behind it, and writes nothing. A hook never blocks or breaks a session: every failure is no output
 // and exit 0. `headjack hook <name>` delegates to hookMain. Node built-ins and two small modules only.
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadSuggestConfig } from '../lib/suggest-config.mjs';
+import { suggestMayBeEnabled } from '../lib/suggest-config.mjs';
 import { stateDir } from './local-config.mjs';
 
 export const HOOK_NAMES = ['prompt', 'warmup', 'skill-used'];
@@ -35,16 +35,6 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-// False only when the config was read and suggestions are off. A config that cannot be read counts as possibly on: the full
-// hook knows how to log it (once per session) and then does nothing.
-async function mayBeEnabled(dir) {
-  try {
-    return (await loadSuggestConfig(dir)).suggest.enabled === true;
-  } catch {
-    return true;
-  }
-}
-
 // Runs one hook, prints its output and exits 0 whatever happens. It exits explicitly: a hosted call stuck in a credential
 // refresh (which takes no abort signal) would otherwise keep the process alive past the deadline.
 export async function hookMain(name, { env = process.env } = {}) {
@@ -55,9 +45,10 @@ export async function hookMain(name, { env = process.env } = {}) {
       const home = env.HOME;
       const dir = stateDir({ env, home });
       const stdin = await readStdin();
-      if (name === 'skill-used' || (await mayBeEnabled(dir))) {
+      if (await suggestMayBeEnabled(dir)) {
         const { runHook } = await import('./hook.mjs');
-        ({ stdout } = await runHook(name, { stdin, env, home, dir }));
+        // performance.now() counts from process start: the prompt deadline includes Node startup, the stdin read and the imports.
+        ({ stdout } = await runHook(name, { stdin, env, home, dir, t0: 0 }));
       }
     }
   } catch {
