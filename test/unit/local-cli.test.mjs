@@ -70,6 +70,25 @@ localTest('an empty vault: search says no results and updates says everything is
   assert.equal(updates.stdout.trim(), 'everything is up to date');
 });
 
+localTest('search --json reports active for a skill present only in ~/.claude/skills, and survives a corrupt harnesses.json', async () => {
+  const { home, state, env } = await sandbox();
+  const src = await skillAt(await tempDir('sv-lsrc-'), 'okapi-notes', 'Keeps okapi sighting notes for field researchers');
+  const reviewed = await runCli(['review', src], { env, input: REVIEW_ANSWERS });
+  assert.equal(reviewed.code, 0, reviewed.stdout + reviewed.stderr);
+
+  const before = JSON.parse((await runCli(['search', 'okapi', '--json'], { env })).stdout);
+  assert.equal(before.find((r) => r.slug === 'okapi-notes').active, false);
+
+  await fsp.mkdir(path.join(home, '.claude', 'skills', 'okapi-notes'), { recursive: true });
+  const after = JSON.parse((await runCli(['search', 'okapi', '--json'], { env })).stdout);
+  assert.equal(after.find((r) => r.slug === 'okapi-notes').active, true);
+
+  await fsp.writeFile(path.join(state, 'harnesses.json'), '{broken');
+  const corrupt = await runCli(['search', 'okapi', '--json'], { env });
+  assert.equal(corrupt.code, 0, corrupt.stdout + corrupt.stderr);
+  assert.equal(JSON.parse(corrupt.stdout).find((r) => r.slug === 'okapi-notes').active, true);
+});
+
 localTest('import finds, publishes and re-publishes (as existing) skills from ~/.agents/skills, and add links one', async () => {
   const { home, env } = await sandbox();
   const root = path.join(home, '.agents', 'skills');

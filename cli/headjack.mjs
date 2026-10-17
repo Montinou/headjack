@@ -9,7 +9,7 @@ import { tokenFile } from './credentials.mjs';
 import { stateDir } from './local-config.mjs';
 import { guardLocal, openApi } from './connect.mjs';
 import { exitCodeFor } from './exit.mjs';
-import { loadState, findEntry } from './state.mjs';
+import { activeKeys, isActive } from './active.mjs';
 import { add, remove, list, verify, gc, cleanup } from './install.mjs';
 import { review } from './review.mjs';
 import { planImport, runImport, trim, restore } from './import.mjs';
@@ -92,14 +92,6 @@ const KEEP_REASON = {
   broken: 'broken symlink',
   managed: 'installed by headjack',
 };
-
-// Read-only view of ~/.claude/settings.json for `search`; an unreadable or malformed file counts as nothing enabled.
-async function enabledPlugins(home) {
-  try {
-    const on = JSON.parse(await readFile(path.join(home, '.claude', 'settings.json'), 'utf8'))?.enabledPlugins;
-    return on && typeof on === 'object' ? on : {};
-  } catch { return {}; }
-}
 
 // The plugin's own version, for the MCP server info. A missing or unreadable manifest must not stop the server.
 async function pluginVersion() {
@@ -216,16 +208,8 @@ async function main(argv) {
         await connect();
         const tags = (o.tag ?? []).flatMap((t) => t.split(',')).map((t) => t.trim()).filter(Boolean);
         const results = await ctx.api.search(q, o.k ? Number(o.k) : 8, undefined, tags, purpose);
-        const state = await loadState(ctx.dir);
-        const enabled = await enabledPlugins(home);
-        const pluginKey = (r) => r.plugin_slug ?? (r.kind === 'plugin' ? r.slug : null);
-        // An alternative is another install of the same plugin skill: "<plugin>@<marketplace>:<skill>".
-        const altPluginKey = (slug) => (slug.lastIndexOf(':') > 0 ? slug.slice(0, slug.lastIndexOf(':')) : null);
-        const isActive = (r) => {
-          const plugins = [pluginKey(r), ...(r.alternatives ?? []).map(altPluginKey)].filter(Boolean);
-          return [r.slug, ...plugins].some((key) => findEntry(state, key)) || plugins.some((key) => enabled[key] === true);
-        };
-        const rows = results.map((r) => ({ ...r, active: isActive(r) }));
+        const keys = await activeKeys(ctx);
+        const rows = results.map((r) => ({ ...r, active: isActive(r, keys) }));
         if (o.json) console.log(JSON.stringify(rows, null, 2));
         else if (!rows.length) console.log('no results');
         else for (const r of rows) console.log(`${r.active ? '●' : '○'} ${r.slug}  [${r.kind}${r.update_available ? ', update' : ''}]\n    ${r.description}${r.tags?.length ? `\n    tags: ${r.tags.join(', ')}` : ''}${r.alternatives?.length ? `\n    also: ${r.alternatives.join(', ')}` : ''}`);
