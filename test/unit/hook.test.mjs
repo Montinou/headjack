@@ -371,6 +371,82 @@ test('warmup: a failing hosted search prints nothing and logs one line', async (
   assert.equal((await hookLog(box)).trim().split('\n').length, 1);
 });
 
+// ---- skill-used ----
+
+const toolPayload = (skill, over = {}) => JSON.stringify({
+  hook_event_name: 'PostToolUse', session_id: SESSION, cwd: '/nowhere', tool_name: 'Skill', tool_input: { skill }, ...over,
+});
+const invokes = async (box) => (await readEvents(box.dir)).filter((e) => e.type === 'invoke');
+const writeSettings = async (box, enabledPlugins) => {
+  await fsp.mkdir(path.join(box.home, '.claude'), { recursive: true });
+  await fsp.writeFile(path.join(box.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins }));
+};
+
+localTest('skill-used: a Skill tool call writes one invoke event with the mapped vault slug', async () => {
+  const box = await seededSandbox();
+  const out = await hook('skill-used', box, { stdin: toolPayload('zq-helper'), now: () => Date.parse('2026-10-17T10:00:00Z') });
+  assert.deepEqual(out, { stdout: '' });
+  assert.deepEqual(await invokes(box), [{ type: 'invoke', session: SESSION, at: '2026-10-17T10:00:00.000Z', skill: 'zq-helper', slug: 'zq-helper' }]);
+  assert.equal(existsSync(sessionFile(box)), false, 'the invoke event is log-only: no session file');
+});
+
+localTest('skill-used: a <plugin>:<skill> name maps through the vault and enabledPlugins', async () => {
+  const box = await seededSandbox();
+  const { DatabaseSync } = await runtimeCheck();
+  const db = openVault({ dir: box.dir, DatabaseSync });
+  const repo = createSqliteRepo(db);
+  await repo.publish(skill('vercel@a:flags-sdk', 'Flags', 'Use flags.'));
+  await repo.publish(skill('vercel@b:flags-sdk', 'Flags', 'Use flags.'));
+  db.close();
+  await hook('skill-used', box, { stdin: toolPayload('vercel:flags-sdk') });
+  await writeSettings(box, { 'vercel@b': true });
+  await hook('skill-used', box, { stdin: toolPayload('vercel:flags-sdk') });
+  assert.deepEqual((await invokes(box)).map((e) => [e.skill, e.slug]), [['vercel:flags-sdk', null], ['vercel:flags-sdk', 'vercel@b:flags-sdk']]);
+});
+
+localTest('skill-used: a skill that is not in the vault is logged with slug null', async () => {
+  const box = await seededSandbox();
+  await hook('skill-used', box, { stdin: toolPayload('not-in-the-vault') });
+  assert.deepEqual((await invokes(box)).map((e) => [e.skill, e.slug]), [['not-in-the-vault', null]]);
+});
+
+test('skill-used: a missing vault leaves slug null and is never created', async () => {
+  const box = await sandbox();
+  await hook('skill-used', box, { stdin: toolPayload('zq-helper') });
+  assert.deepEqual((await invokes(box)).map((e) => [e.skill, e.slug]), [['zq-helper', null]]);
+  assert.equal(existsSync(vaultFile(box.dir)), false);
+});
+
+test('skill-used: an invalid session id is logged with session null', async () => {
+  const box = await sandbox();
+  for (const session_id of ['../evil', 'a b', '', 7, undefined]) await hook('skill-used', box, { stdin: toolPayload('zq-helper', { session_id }) });
+  assert.deepEqual((await invokes(box)).map((e) => e.session), [null, null, null, null, null]);
+  assert.equal(existsSync(path.join(box.dir, 'suggest', 'sessions')), false);
+});
+
+test('skill-used: other tools, other shapes and garbage write nothing', async () => {
+  const box = await seededSandbox();
+  for (const stdin of [
+    toolPayload('zq-helper', { tool_name: 'Bash' }),
+    toolPayload('zq-helper', { tool_name: undefined }),
+    JSON.stringify({ tool_name: 'Skill', tool_input: {} }),
+    JSON.stringify({ tool_name: 'Skill', tool_input: { skill: 5 } }),
+    JSON.stringify({ tool_name: 'Skill', tool_input: { skill: '' } }),
+    JSON.stringify({ tool_name: 'Skill', tool_input: { skill: 'x'.repeat(500) } }),
+    JSON.stringify({ tool_name: 'Skill' }),
+    '{{{', '[]', '',
+  ]) assert.deepEqual(await hook('skill-used', box, { stdin }), { stdout: '' });
+  assert.deepEqual(await readEvents(box.dir), []);
+});
+
+test('skill-used: logs the skill name and never the arguments, and works with suggestions disabled', async () => {
+  const box = await sandbox();
+  await hook('skill-used', box, { stdin: toolPayload('zq-helper', { tool_input: { skill: 'zq-helper', args: 'SECRET-PROMPT-TEXT' } }) });
+  const raw = await fsp.readFile(path.join(box.dir, 'suggest', 'log.jsonl'), 'utf8');
+  assert.equal(raw.includes('SECRET-PROMPT-TEXT'), false);
+  assert.equal((await invokes(box)).length, 1);
+});
+
 // ---- the spawned process ----
 
 function runCli(args, { env, stdin = '' }) {

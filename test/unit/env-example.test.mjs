@@ -25,7 +25,7 @@ const COMPUTED = [
 ];
 // Provided by the operating system, Node, CI, Vercel or the agent harness; subtracted by exact name.
 const RUNTIME = [
-  'HOME', 'PATH', 'NODE_ENV', 'CI', 'VERCEL_ENV', 'VERCEL_URL', 'VERCEL_BRANCH_URL', 'VERCEL_PROJECT_PRODUCTION_URL', 'PORT', 'CLAUDE_CODE_SESSION_ID',
+  'HOME', 'PATH', 'NODE_ENV', 'CI', 'VERCEL_ENV', 'VERCEL_URL', 'VERCEL_BRANCH_URL', 'VERCEL_PROJECT_PRODUCTION_URL', 'PORT', 'CLAUDE_CODE_SESSION_ID', 'VISUAL', 'EDITOR',
   'TMPDIR', 'TEMP', 'TMP', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'NODE_EXTRA_CA_CERTS',
 ];
 

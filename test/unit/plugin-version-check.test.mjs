@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkPluginVersion, shippedFiles } from '../../scripts/plugin-version-check.mjs';
 import { makeDir } from '../helpers.mjs';
+import { importGraph } from '../import-scanner.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../../scripts/plugin-version-check.mjs', import.meta.url));
 
@@ -192,4 +193,15 @@ test('a change under plugin-hooks/ without a version bump is not ok and names th
   await writeFile(path.join(cwd, '.claude-plugin/plugin.json'), manifest('0.3.1'));
   await commit(cwd, 'bump');
   assert.equal((await checkPluginVersion({ cwd, base: 'main' })).ok, true);
+});
+
+test('the hook entry the plugin hooks run, and everything it can load, is in the shipped closure of this repository', async () => {
+  // plugin-hooks/hooks.json runs cli/hook-entry.mjs, which headjack.mjs also imports (`headjack hook <name>`); the guard
+  // ships the closure of headjack.mjs, so a file reachable only from the entry would go unnoticed without this.
+  const shipped = new Set((await importGraph('cli/headjack.mjs')).files);
+  const entry = (await importGraph('cli/hook-entry.mjs')).files;
+  for (const file of ['cli/hook-entry.mjs', 'cli/hook.mjs', 'lib/skill-name.mjs', 'lib/suggest-config.mjs', 'lib/suggest.mjs', 'lib/local/schema.mjs']) {
+    assert.ok(shipped.has(file), `${file} is shipped`);
+  }
+  assert.deepEqual(entry.filter((f) => !shipped.has(f)), [], 'nothing the entry imports is outside the shipped closure');
 });

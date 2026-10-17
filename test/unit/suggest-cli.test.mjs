@@ -347,3 +347,205 @@ localTest('--explain prints a placeholder for a candidate slug that fails the va
   assert.ok(!res.stdout.includes('<script>'));
   assert.match(res.stdout, /^ {2}<invalid slug> {2}fts_rank=/m);
 });
+
+// ---- --save: real prompts kept locally as calibration cases (spec §5.4) ----
+
+// Like runCli, with `input` piped to stdin.
+function runCliWithInput(args, env, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('node', [CLI, ...args], { env: { PATH: process.env.PATH, ...env }, stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000 });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(input);
+  });
+}
+
+// Runs the CLI with a pseudo-terminal as stdin and stdout (python3's pty), so process.stdin.isTTY is true.
+const PTY_RUNNER = 'import os, pty, sys\nsys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))';
+const hasPython = await new Promise((resolve) => {
+  const p = spawn('python3', ['-I', '-c', 'import pty, os; os.waitstatus_to_exitcode'], { stdio: 'ignore' });
+  p.on('error', () => resolve(false));
+  p.on('close', (code) => resolve(code === 0));
+});
+function runCliOnTty(args, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', ['-I', '-c', PTY_RUNNER, 'node', CLI, ...args], { env: { PATH: process.env.PATH, ...env }, stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000 });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end();
+  });
+}
+const ttyTest = (name, fn) => (hasPython ? test(name, fn) : test.skip(`${name} (skipped: no python3 for a pseudo-terminal)`, fn));
+
+const casesFile = (state) => path.join(state, 'suggest', 'cases.jsonl');
+const readCases = async (state) => (await fsp.readFile(casesFile(state), 'utf8')).split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+// An executable that stands in for an editor: it writes `text` into the file it is given (its last argument), and records
+// that path and its argument count next to itself.
+async function fakeEditor(text) {
+  const dir = await tempDir('sv-sg-editor-');
+  const script = path.join(dir, 'editor.sh');
+  await fsp.writeFile(script, `#!/bin/sh\nfor last; do :; done\nprintf '%s' '${text}' > "$last"\nprintf '%s\\n%s\\n' "$last" "$#" > "${dir}/seen"\n`, { mode: 0o755 });
+  return { script, seen: async () => (await fsp.readFile(path.join(dir, 'seen'), 'utf8')).split('\n') };
+}
+
+test('--save reads the prompt from piped stdin and appends { q, slug, lang, at } to cases.jsonl (0600, dir 0700)', async () => {
+  const { state, env } = await sandbox();
+  const res = await runCliWithInput(['suggest', '--save', '--expect', 'none', '--lang', 'es'], env, 'agregar flags\n');
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  const cases = await readCases(state);
+  assert.equal(cases.length, 1);
+  assert.deepEqual(Object.keys(cases[0]).sort(), ['at', 'lang', 'q', 'slug']);
+  assert.deepEqual([cases[0].q, cases[0].slug, cases[0].lang], ['agregar flags', null, 'es']);
+  assert.ok(Number.isFinite(Date.parse(cases[0].at)));
+  assert.equal((await fsp.stat(casesFile(state))).mode & 0o777, 0o600);
+  assert.equal((await fsp.stat(path.join(state, 'suggest'))).mode & 0o777, 0o700);
+  assert.doesNotMatch(res.stdout + res.stderr, /agregar flags/, 'the prompt is not echoed');
+});
+
+test('--save --expect <slug> stores the slug; --lang defaults to the language guess; cases append', async () => {
+  const { state, env } = await sandbox();
+  let res = await runCliWithInput(['suggest', '--save', '--expect', 'zq-helper'], env, 'quiero programar tareas con cron para el servidor');
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  res = await runCliWithInput(['suggest', '--save', '--expect', 'none'], env, 'schedule the recurring jobs with cron');
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  const cases = await readCases(state);
+  assert.deepEqual(cases.map((c) => [c.slug, c.lang]), [['zq-helper', 'es'], [null, 'en']]);
+});
+
+test('--save never writes the prompt to the suggest log', async () => {
+  const { state, env } = await sandbox();
+  const res = await runCliWithInput(['suggest', '--save', '--expect', 'none'], env, 'a secret prompt');
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  assert.equal(existsSync(path.join(state, 'suggest', 'log.jsonl')), false);
+});
+
+test('--save with positional text exits 2 and writes no file', async () => {
+  const { state, env } = await sandbox();
+  const res = await runCliWithInput(['suggest', '--save', '--expect', 'none', PROMPT], env, 'ignored');
+  assert.equal(res.code, 2, res.stdout + res.stderr);
+  assert.match(res.stderr, /^headjack: .*(argv|stdin|editor)/);
+  assert.equal(existsSync(casesFile(state)), false);
+});
+
+test('--save without --expect exits 2 and writes no file', async () => {
+  const { state, env } = await sandbox();
+  const res = await runCliWithInput(['suggest', '--save'], env, 'agregar flags');
+  assert.equal(res.code, 2, res.stdout + res.stderr);
+  assert.match(res.stderr, /--expect/);
+  assert.equal(existsSync(casesFile(state)), false);
+});
+
+test('bad --save values exit 2: empty stdin, an invalid slug, an invalid --lang, --expect or --lang without --save, --save with another mode', async () => {
+  const { state, env } = await sandbox();
+  for (const [args, input] of [
+    [['suggest', '--save', '--expect', 'none'], '  \n'],
+    [['suggest', '--save', '--expect', 'Not A Slug!'], 'x'],
+    [['suggest', '--save', '--expect', 'none', '--lang', 'fr'], 'x'],
+    [['suggest', '--expect', 'none', PROMPT], ''],
+    [['suggest', '--lang', 'es', PROMPT], ''],
+    [['suggest', '--save', '--expect', 'none', '--report'], 'x'],
+    [['suggest', '--save', '--expect', 'none', '--enable'], 'x'],
+    [['suggest', '--save', '--expect', 'none', '-k', '3'], 'x'],
+    [['suggest', '--save', '--expect', 'none', '--tag', 'a'], 'x'],
+    [['suggest', '--save', '--expect', 'none', '--purpose', 'eval'], 'x'],
+    [['suggest', '--save', '--expect', 'none', '--project'], 'x'],
+  ]) {
+    const res = await runCliWithInput(args, env, input);
+    assert.equal(res.code, 2, `${args.join(' ')}: ${res.stdout}${res.stderr}`);
+    assert.match(res.stderr, /^headjack: /);
+  }
+  assert.equal(existsSync(casesFile(state)), false);
+});
+
+ttyTest('--save on a terminal opens $VISUAL before $EDITOR, with a file in a private temp dir that is removed afterwards', async () => {
+  const { state, env } = await sandbox();
+  const visual = await fakeEditor('from visual');
+  const editor = await fakeEditor('from editor');
+  const res = await runCliOnTty(['suggest', '--save', '--expect', 'zq-helper', '--lang', 'en'], { ...env, VISUAL: visual.script, EDITOR: editor.script });
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  assert.deepEqual((await readCases(state)).map((c) => [c.q, c.slug, c.lang]), [['from visual', 'zq-helper', 'en']]);
+  const [file] = await visual.seen();
+  assert.equal(existsSync(path.dirname(file)), false, 'the temp dir is removed');
+  assert.equal(existsSync(editor.script) && (await fsp.readdir(path.dirname(editor.script))).includes('seen'), false, '$EDITOR was not run');
+});
+
+ttyTest('--save on a terminal falls back to $EDITOR, which may carry arguments', async () => {
+  const { state, env } = await sandbox();
+  const editor = await fakeEditor('from editor');
+  const res = await runCliOnTty(['suggest', '--save', '--expect', 'none'], { ...env, EDITOR: `${editor.script} -w` });
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  assert.equal((await readCases(state))[0].q, 'from editor');
+  assert.equal((await editor.seen())[1], '2', 'the editor got "-w" and the file');
+});
+
+ttyTest('--save on a terminal with neither $VISUAL nor $EDITOR exits 2 and writes no file', async () => {
+  const { state, env } = await sandbox();
+  const res = await runCliOnTty(['suggest', '--save', '--expect', 'none'], env);
+  assert.equal(res.code, 2, res.stdout + res.stderr);
+  assert.match(res.stdout + res.stderr, /VISUAL|EDITOR/);
+  assert.equal(existsSync(casesFile(state)), false);
+});
+
+ttyTest('--save with an editor that fails writes no case and still removes the temp dir', async () => {
+  const { state, env } = await sandbox();
+  const dir = await tempDir('sv-sg-editor-');
+  const script = path.join(dir, 'fail.sh');
+  await fsp.writeFile(script, `#!/bin/sh\nprintf '%s' "$1" > "${dir}/seen"\nprintf 'half' > "$1"\nexit 3\n`, { mode: 0o755 });
+  const res = await runCliOnTty(['suggest', '--save', '--expect', 'none'], { ...env, VISUAL: script });
+  assert.notEqual(res.code, 0);
+  assert.equal(existsSync(casesFile(state)), false);
+  assert.equal(existsSync(path.dirname(await fsp.readFile(path.join(dir, 'seen'), 'utf8'))), false);
+});
+
+ttyTest('--save with an editor that leaves the file empty exits 2 and writes no case', async () => {
+  const { state, env } = await sandbox();
+  const editor = await fakeEditor('   ');
+  const res = await runCliOnTty(['suggest', '--save', '--expect', 'none'], { ...env, VISUAL: editor.script });
+  assert.equal(res.code, 2, res.stdout + res.stderr);
+  assert.equal(existsSync(casesFile(state)), false);
+});
+
+test('--save with an invalid --expect names the allowed slug characters', async () => {
+  const { env } = await sandbox();
+  const res = await runCliWithInput(['suggest', '--save', '--expect', 'Not A Slug!'], env, 'x');
+  assert.equal(res.code, 2, res.stdout + res.stderr);
+  assert.match(res.stderr, /--expect must be a slug \(letters, digits, \. _ @ : -\) or none/);
+});
+
+ttyTest('Ctrl+C while the editor is open does not kill the command: the editor ends, the case is saved and the temp dir is gone', async () => {
+  const { state, env } = await sandbox();
+  const dir = await tempDir('sv-sg-editor-');
+  const script = path.join(dir, 'int.sh');
+  // Ignores INT itself, then sends INT to its whole process group (what the terminal does on Ctrl+C) and finishes.
+  await fsp.writeFile(script, `#!/bin/sh\ntrap '' INT\nprintf '%s' "$1" > "${dir}/seen"\nprintf 'after ctrl-c' > "$1"\nkill -INT 0\nsleep 0.3\nexit 0\n`, { mode: 0o755 });
+  const res = await runCliOnTty(['suggest', '--save', '--expect', 'none'], { ...env, VISUAL: script });
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  assert.equal((await readCases(state))[0].q, 'after ctrl-c');
+  assert.equal(existsSync(path.dirname(await fsp.readFile(path.join(dir, 'seen'), 'utf8'))), false, 'the temp dir is removed');
+});
+
+ttyTest('SIGTERM to the command while the editor is open removes the temp dir and exits 143', async () => {
+  const { state, env } = await sandbox();
+  const dir = await tempDir('sv-sg-editor-');
+  const script = path.join(dir, 'term.sh');
+  // The shell execs the editor, so its parent is the CLI: send it SIGTERM (no ps lookup, whose names differ by platform).
+  await fsp.writeFile(script, `#!/bin/sh
+printf '%s' "$1" > "${dir}/seen"
+printf 'half written' > "$1"
+kill -TERM "$PPID"
+sleep 2
+`, { mode: 0o755 });
+  const res = await runCliOnTty(['suggest', '--save', '--expect', 'none'], { ...env, VISUAL: script });
+  assert.equal(res.code, 143, res.stdout + res.stderr);
+  assert.equal(existsSync(casesFile(state)), false);
+  assert.equal(existsSync(path.dirname(await fsp.readFile(path.join(dir, 'seen'), 'utf8'))), false, 'the temp dir is removed');
+});
