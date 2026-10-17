@@ -214,9 +214,9 @@ async function removeLocked(slug, opts, ctx) {
 
 const UNITS = { m: 60e3, h: 3600e3, d: 86400e3 };
 
-export function parseDuration(value) {
+export function parseDuration(value, flag = '--older-than') {
   const m = /^(\d+)([mhd])$/.exec(value ?? '');
-  if (!m) throw new UserError(`--older-than expects a duration such as 30m, 12h or 2d (got "${value}")`);
+  if (!m) throw new UserError(`${flag} expects a duration such as 30m, 12h or 2d (got "${value}")`);
   return Number(m[1]) * UNITS[m[2]];
 }
 

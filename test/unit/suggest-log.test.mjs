@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile, readFile, stat, readdir, appendFile } from 'node:fs/promises';
+import { writeFile, readFile, stat, readdir, appendFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { tempDir } from '../helpers.mjs';
-import { logFile, appendEvent, readEvents } from '../../lib/suggest-log.mjs';
+import { logFile, casesFile, appendEvent, appendCase, readEvents } from '../../lib/suggest-log.mjs';
 
 const tmp = () => tempDir('hj-suggest-log-');
 const mode = async (p) => (await stat(p)).mode & 0o777;
@@ -83,4 +83,35 @@ test('appendEvent into an unwritable location resolves without throwing', async 
   await assert.doesNotReject(appendEvent(dir, 'not an object'));
   await assert.doesNotReject(appendEvent(dir, { big: 1n })); // JSON.stringify throws
   assert.deepEqual(await readEvents(dir), []);
+});
+
+// ---- appendCase: the only file that holds prompt text (spec §5.4) ----
+
+test('appendCase writes { q, slug, lang, at } to <dir>/suggest/cases.jsonl, file 0600, directory 0700, one line per case', async () => {
+  const dir = await tmp();
+  await appendCase(dir, { q: 'agregar flags', slug: null, lang: 'es', at: '2026-10-17T10:00:00.000Z' });
+  await appendCase(dir, { q: 'two\nlines', slug: 'zq-helper', lang: 'en', at: '2026-10-17T10:01:00.000Z' });
+  assert.equal(casesFile(dir), path.join(dir, 'suggest', 'cases.jsonl'));
+  assert.equal(await mode(path.join(dir, 'suggest')), 0o700);
+  assert.equal(await mode(casesFile(dir)), 0o600);
+  const lines = (await readFile(casesFile(dir), 'utf8')).split('\n');
+  assert.equal(lines.length, 3);
+  assert.deepEqual(JSON.parse(lines[0]), { q: 'agregar flags', slug: null, lang: 'es', at: '2026-10-17T10:00:00.000Z' });
+  assert.equal(JSON.parse(lines[1]).q, 'two\nlines');
+});
+
+test('appendCase tightens a loose existing directory and file, and does not touch the event log', async () => {
+  const dir = await tmp();
+  await mkdir(path.join(dir, 'suggest'), { mode: 0o755 });
+  await writeFile(path.join(dir, 'suggest', 'cases.jsonl'), '', { mode: 0o644 });
+  await appendCase(dir, { q: 'x', slug: null, lang: 'en', at: '2026-10-17T10:00:00.000Z' });
+  assert.equal(await mode(path.join(dir, 'suggest')), 0o700);
+  assert.equal(await mode(casesFile(dir)), 0o600);
+  assert.deepEqual(await readdir(path.join(dir, 'suggest')), ['cases.jsonl']);
+});
+
+test('appendCase reports a failure instead of hiding it (a saved case that was not saved must be noticed)', async () => {
+  const dir = await tmp();
+  await writeFile(path.join(dir, 'suggest'), 'a file where the directory should be');
+  await assert.rejects(appendCase(dir, { q: 'x', slug: null, lang: 'en', at: '2026-10-17T10:00:00.000Z' }));
 });

@@ -3,14 +3,22 @@
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/cli/headjack\" hook prompt", "timeout": 10 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/hook-entry.mjs\" prompt", "timeout": 10 }
         ]
       }
     ],
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/cli/headjack\" hook warmup", "timeout": 15, "async": true }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/hook-entry.mjs\" warmup", "timeout": 15, "async": true }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/cli/hook-entry.mjs\" skill-used", "timeout": 5 }
         ]
       }
     ]

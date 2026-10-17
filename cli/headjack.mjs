@@ -11,7 +11,7 @@ import { stateDir } from './local-config.mjs';
 import { guardLocal, openApi } from './connect.mjs';
 import { exitCodeFor } from './exit.mjs';
 import { activeKeys, isActive } from './active.mjs';
-import { add, remove, list, verify, gc, cleanup } from './install.mjs';
+import { add, remove, list, verify, gc, cleanup, parseDuration } from './install.mjs';
 import { review } from './review.mjs';
 import { planImport, runImport, trim, restore } from './import.mjs';
 import { exec } from './exec.mjs';
@@ -29,6 +29,8 @@ const USAGE = `headjack — personal skill vault
   headjack cleanup [--harness <id,…>] [--older-than 12h|30m|2d] [--dry-run]
   headjack suggest "<text>" [--json] [--explain] [--session-id <id>]
   headjack suggest --enable [--hosted|--local] | --disable
+  headjack suggest --report [--since 7d|12h|30m] [--json]
+  headjack suggest --save --expect <slug|none> [--lang es|en]   (prompt from stdin, or $VISUAL / $EDITOR on a terminal)
   headjack hook prompt|warmup|skill-used   (internal: run by the Claude Code hooks, not by hand)
   headjack list [--active] [--json]
   headjack harness detect
@@ -44,7 +46,8 @@ const USAGE = `headjack — personal skill vault
 
 suggest searches the vault for skills that fit <text> and prints the ones you do not have (nothing when the vault is
 missing). --enable / --disable turn the prompt hook's suggestions on and off in <state dir>/config.json; --hosted / --local
-pick the search the hook uses. --session-id <id> remembers what was suggested for that session.
+pick the search the hook uses. --session-id <id> remembers what was suggested for that session. --report prints, from the
+suggestion log, how many suggestions were taken (hit), left alone (ignored) or beaten by a skill you added or used anyway (missed).
 
 Harness ids: claude, codex, grok and any that "harness detect" finds (gemini, cursor, windsurf, …);
 "all" = every detected one. --session marks the install so that "cleanup" removes it.
@@ -88,6 +91,11 @@ const OPTIONS = {
   disable: { type: 'boolean' },
   hosted: { type: 'boolean' },
   local: { type: 'boolean' },
+  report: { type: 'boolean' },
+  since: { type: 'string' },
+  save: { type: 'boolean' },
+  expect: { type: 'string' },
+  lang: { type: 'string' },
 };
 
 const SOURCES = ['suggest', 'plan', 'manual'];
@@ -127,7 +135,7 @@ function mcpEnvironment(env) {
   return { mode, origin };
 }
 
-const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable';
+const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable | suggest --report [--since <dur>] [--json] | suggest --save --expect <slug|none> [--lang es|en]';
 const dash = (v) => (v === null || v === undefined ? '-' : v);
 
 // One --explain line per candidate: the signals, then what the filters decided.
@@ -137,50 +145,15 @@ function explainLine(c, slugPattern) {
   return `  ${slug}  ${signals.join(' ')}  active=${c.active} review=${c.review} passed=${c.passed} rejected_by=${dash(c.rejected_by)}`;
 }
 
-// `headjack hook <name>` (internal, spec §4.1): reads the hook JSON from stdin, prints what runHook returns and exits 0
-// whatever happens. It exits explicitly: a hosted call stuck in a credential refresh (which takes no abort signal) would
-// otherwise keep the process alive past the deadline.
-const HOOK_NAMES = ['prompt', 'warmup', 'skill-used'];
-const HOOK_STDIN_TIMEOUT_MS = 2000;
-const HOOK_STDIN_MAX_BYTES = 8 * 1024 * 1024;
-
-// All of stdin as text; '' when it is bigger than the cap or does not end within the timeout.
-async function readHookStdin() {
-  const chunks = [];
-  let size = 0;
-  let oversize = false;
-  let timer;
-  const read = (async () => {
-    for await (const chunk of process.stdin) {
-      size += chunk.length;
-      if (size > HOOK_STDIN_MAX_BYTES) { oversize = true; return; }
-      chunks.push(chunk);
-    }
-  })();
-  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), HOOK_STDIN_TIMEOUT_MS); });
-  try {
-    if ((await Promise.race([read.then(() => 'done', () => 'error'), timeout])) !== 'done' || oversize) return '';
-  } finally {
-    clearTimeout(timer);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
+// `headjack hook <name>` (internal, spec §4.1): the same code the plugin hooks run through cli/hook-entry.mjs, which reads
+// the hook JSON from stdin, prints what the hook returns and exits 0 whatever happens.
 async function hookCommand(name) {
-  process.stdout.on('error', () => {});
-  let stdout = '';
   try {
-    if (HOOK_NAMES.includes(name)) {
-      const { runHook } = await import('./hook.mjs');
-      const home = process.env.HOME;
-      const dir = stateDir({ env: process.env, home });
-      ({ stdout } = await runHook(name, { stdin: await readHookStdin(), env: process.env, home, dir }));
-    }
+    const { hookMain } = await import('./hook-entry.mjs');
+    return await hookMain(name);
   } catch {
-    stdout = '';
+    process.exit(0);
   }
-  if (stdout) await new Promise((resolve) => { process.stdout.write(stdout, resolve); });
-  process.exit(0);
 }
 
 function need(value, usage) {
@@ -290,6 +263,34 @@ async function main(argv) {
       }
       case 'suggest': {
         const text = args.join(' ').trim();
+        if ((o.expect !== undefined || o.lang !== undefined) && !o.save) throw new UserError('--expect and --lang go with --save (headjack suggest --save --expect <slug|none>)');
+        if (o.save) {
+          if (text) throw new UserError('--save never takes the prompt as an argument (shell history keeps it): pipe it on stdin or let it open $VISUAL / $EDITOR');
+          if (o.report || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o.json || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--save takes no other suggest option except --expect and --lang (usage: headjack ${SUGGEST_USAGE})`);
+          if (o.expect === undefined) throw new UserError('--save needs --expect <slug|none>: the skill this prompt should surface, or none');
+          const [{ SLUG_RE }, { guessLang }, { appendCase }, { readPrompt }] = await Promise.all([
+            import('../lib/handlers.mjs'), import('../lib/suggest.mjs'), import('../lib/suggest-log.mjs'), import('./suggest-save.mjs'),
+          ]);
+          if (o.expect !== 'none' && !SLUG_RE.test(o.expect)) throw new UserError('--expect must be a slug (letters, digits, . _ @ : -) or none');
+          const lang = o.lang === undefined ? undefined : oneOf(o.lang, ['es', 'en'], '--lang');
+          const q = await readPrompt();
+          await appendCase(ctx.dir, { q, slug: o.expect === 'none' ? null : o.expect, lang: lang ?? guessLang(q), at: new Date().toISOString() });
+          console.log('saved the case to the suggest cases file');
+          return 0;
+        }
+        if (o.since !== undefined && !o.report) throw new UserError('--since goes with --report (headjack suggest --report --since 7d)');
+        if (o.report) {
+          if (text || o.enable || o.disable || o.hosted || o.local || o.explain || o['session-id'] !== undefined) throw new UserError(`--report takes no text and no other suggest option except --since and --json (usage: headjack ${SUGGEST_USAGE})`);
+          const [{ readEvents }, { outcomes, summarize, formatReport }] = await Promise.all([import('../lib/suggest-log.mjs'), import('../lib/suggest-report.mjs')]);
+          const since = o.since === undefined ? undefined : Date.now() - parseDuration(o.since, '--since');
+          // The whole log (capped at 2 x 5 MiB): a run older than --since still governs the adds after it, so only the
+          // outcomes are trimmed to --since, in outcomes() and summarize().
+          const events = await readEvents(ctx.dir);
+          const result = outcomes(events, { since });
+          const rows = summarize(result, events);
+          console.log(o.json ? JSON.stringify({ ...result, rows }, null, 2) : formatReport(rows, result, { sinceLabel: o.since }));
+          return 0;
+        }
         if (o.enable && o.disable) throw new UserError('--enable and --disable cannot go together');
         if (o.hosted && o.local) throw new UserError('--hosted and --local cannot go together');
         if ((o.hosted || o.local) && !o.enable) throw new UserError('--hosted and --local go with --enable (headjack suggest --enable --hosted)');
