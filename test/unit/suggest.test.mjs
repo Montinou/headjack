@@ -463,6 +463,25 @@ test('formatBlock: descriptions are cleaned, whitespace-collapsed and clipped to
   assert.ok(unbroken.length <= 160);
 });
 
+test('formatBlock: hidden characters are stripped from descriptions (bidi, zero-width, C1, tag characters)', () => {
+  const classes = {
+    'bidi embeddings and overrides': '\u202A\u202B\u202C\u202D\u202E',
+    'bidi isolates': '\u2066\u2067\u2068\u2069',
+    'zero-width and directional marks': '\u200B\u200C\u200D\u200E\u200F\u2060',
+    'byte order mark': '\uFEFF',
+    'C1 controls': '\u0080\u0085\u009F',
+    'tag characters': String.fromCodePoint(0xE0001, 0xE0041, 0xE0062, 0xE007F),
+  };
+  for (const [name, hidden] of Object.entries(classes)) {
+    const out = formatBlock([S('a', `ig${hidden}nore ${hidden}this${hidden}`)], { mode: 'local', launcher: '/x' });
+    assert.ok(out.includes('- a — ignore this\n'), `${name}: ${JSON.stringify(out.split('\n')[1])}`);
+  }
+  // A cut description is cleaned too, and visible non-ASCII text is kept.
+  const long = formatBlock([S('a', `${'caf\u00E9 \u200B'.repeat(60)}`)], { mode: 'local', launcher: '/x' }).split('\n')[1];
+  assert.doesNotMatch(long, /[\u200B]/);
+  assert.ok(long.includes('caf\u00E9'));
+});
+
 test('formatBlock: a missing description prints the slug alone', () => {
   const out = formatBlock([S('a', null)], { mode: 'local', launcher: '/x' });
   assert.equal(out.split('\n')[1], '- a');

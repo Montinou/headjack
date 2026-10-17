@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import * as fsp from 'node:fs/promises';
 import path from 'node:path';
 import { localTest, zeroPagesAfterFirst } from '../local-helpers.mjs';
 import { tempDir } from '../helpers.mjs';
@@ -274,6 +275,18 @@ localTest('damage found during the search is a UserError with the damaged-vault 
   const err = await localSearch({ dir, query: 'deploy cron jobs', migrate: false }).then(() => null, (e) => e);
   assert.ok(err instanceof UserError);
   assert.equal(err.message, `vault ${vaultFile(dir)} is damaged; run headjack verify`);
+});
+
+localTest('a vault.db that is not a database is a UserError with the damaged-vault message, with and without migrate', async () => {
+  const dir = await tempDir('sv-local-adapter-');
+  const junk = Buffer.from('these are my notes, not a database\n'.repeat(40));
+  await fsp.writeFile(vaultFile(dir), junk);
+  for (const migrate of [false, true]) {
+    const err = await localSearch({ dir, query: 'deploy cron jobs', migrate }).then(() => null, (e) => e);
+    assert.ok(err instanceof UserError, `migrate ${migrate}`);
+    assert.equal(err.message, `vault ${vaultFile(dir)} is damaged; run headjack verify`);
+  }
+  assert.deepEqual(await fsp.readFile(vaultFile(dir)), junk);
 });
 
 localTest('localSearch matches a Spanish prompt through example requests and, failing that, the glossary', async () => {

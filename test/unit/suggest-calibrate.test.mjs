@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { localTest } from '../local-helpers.mjs';
 import { tempDir } from '../helpers.mjs';
 import { runtimeCheck } from '../../lib/local/runtime.mjs';
-import { openVault } from '../../lib/local/schema.mjs';
+import { MIGRATIONS, openVault } from '../../lib/local/schema.mjs';
 import { createSqliteRepo } from '../../lib/local/sqlite-repo.mjs';
 import { loadSuggestConfig } from '../../lib/suggest-config.mjs';
 import { suggestDeps } from '../../cli/suggest-deps.mjs';
@@ -280,14 +280,33 @@ test('calibrate runs each row once with entry eval, never writes the log or the 
   for (const r of report.rows) assert.deepEqual(r.suggested, suggestedSlugs(r.record, 'local', cfg.suggest.rule, cfg.suggest.maxSuggestions));
 });
 
-test('calibrate counts a row the pipeline skipped and leaves it out of the metrics', async () => {
+test('calibrate keeps a skipped:short row as no suggestion, so it still counts toward recall (spec 3.1)', async () => {
   const rs = [...evalRows(), { q: 'too short', slug: 'a', lang: 'en' }];
   const key = answerKey(rs);
   const report = await calibrate({
     rows: rs, mode: 'local', config: await config(), cwd: '/nowhere', home: '/nowhere',
     depsFor: depsFor(async (q) => ({ candidates: [{ slug: key.get(q).slug ?? 'none', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' })),
   });
+  assert.equal(report.skipped, 0);
+  assert.equal(report.rows.length, rs.length);
+  const short = report.rows.find((r) => r.outcome === 'skipped:short');
+  assert.deepEqual([short.slug, short.suggested], ['a', []]);
+  // 12 skill rows answered correctly plus the short one that expected a skill and got none.
+  assert.deepEqual(report.current.en.recall, { pct: 92, n: 12, d: 13 });
+});
+
+test('calibrate counts a row an adapter skipped and leaves it out of the metrics', async () => {
+  const rs = [...evalRows(), { q: 'a spare english prompt about something 99', slug: 'skill-99', lang: 'en' }];
+  const key = answerKey(rs);
+  const dropped = rs.find((r) => r.lang === 'en' && r.slug !== null);
+  const report = await calibrate({
+    rows: rs, mode: 'local', config: await config(), cwd: '/nowhere', home: '/nowhere',
+    depsFor: depsFor(async (q) => (q === dropped.q
+      ? { outcome: 'skipped:busy' }
+      : { candidates: [{ slug: key.get(q).slug ?? 'none', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' })),
+  });
   assert.equal(report.skipped, 1);
+  assert.equal(report.rows.length, rs.length - 1);
   assert.equal(report.current.en.recall.d, 12);
 });
 
@@ -367,15 +386,16 @@ test('the training line says it is pooled over the folds', async () => {
 });
 
 test('calibrate re-checks the minimums once skipped rows are dropped, naming the skip count', async () => {
-  // 20 rows per language are enough on paper; one Spanish row is too short to search, which leaves 19.
+  // 20 rows per language are enough on paper; the search skips one Spanish row (a busy vault), which leaves 19.
   const rs = evalRows();
-  const at = rs.findIndex((r) => r.lang === 'es' && r.slug !== null);
-  rs[at] = { ...rs[at], q: 'too short' };
+  const dropped = rs.find((r) => r.lang === 'es' && r.slug !== null);
   const key = answerKey(rs);
   await assert.rejects(
     calibrate({
       rows: rs, mode: 'local', config: await config(), cwd: '/nowhere', home: '/nowhere',
-      depsFor: depsFor(async (q) => ({ candidates: [{ slug: key.get(q).slug ?? 'x', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' })),
+      depsFor: depsFor(async (q) => (q === dropped.q
+        ? { outcome: 'skipped:busy' }
+        : { candidates: [{ slug: key.get(q).slug ?? 'x', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' })),
     }),
     (e) => /1 row skipped/.test(e.message) && /es: need 1 more row/.test(e.message) && !/en: need/.test(e.message),
   );
@@ -475,6 +495,26 @@ localTest('suggest --calibrate leaves an existing config.json byte for byte, and
   assert.equal(out.mode, 'local');
   assert.ok(out.current.en.precision && out.cv.recommended.en);
   assert.ok(!JSON.stringify(out).includes('recurring jobs'), 'the JSON carries no prompt text');
+});
+
+localTest('suggest --calibrate migrates a vault left at an older schema instead of skipping every row', async () => {
+  const home = await tempDir('sv-cal-home-');
+  const state = await tempDir('sv-cal-state-');
+  const { DatabaseSync } = await runtimeCheck();
+  // A vault file no migration has run on (user_version 0), as right after a plugin update that adds migrations.
+  const old = new DatabaseSync(path.join(state, 'vault.db'));
+  old.exec('create table t (x integer); drop table t');
+  old.close();
+  await writeEval(state, [...cronRows('en', 20, 8), ...cronRows('es', 20, 8)]);
+  const { code, stdout, stderr } = await runCli(['suggest', '--calibrate', '--json'], { HOME: home, HEADJACK_HOME: state });
+  assert.equal(code, 0, stderr);
+  assert.equal(JSON.parse(stdout).skipped, 0);
+  const db = new DatabaseSync(path.join(state, 'vault.db'), { readOnly: true });
+  try {
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
+  } finally {
+    db.close();
+  }
 });
 
 localTest('suggest --calibrate refuses below the minimums, naming what is missing', async () => {

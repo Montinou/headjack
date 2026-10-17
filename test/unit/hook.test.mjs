@@ -170,6 +170,24 @@ test('prompt: a hosted search that never resolves returns within deadlineMs.host
   assert.deepEqual(runs.map((r) => r.outcome), ['timeout']);
 });
 
+test('prompt: the deadline counts from t0, so time spent before runHook (process start, stdin, imports) is not extra', async () => {
+  const box = await sandbox();
+  await hostedConfig(box.dir, { deadlineMs: { hosted: 400 } });
+  let signal;
+  const hostedSearch = (args) => { signal = args.signal; return never(); };
+  const started = performance.now();
+  // As if the process had been running for 300 ms before the hook started: 100 ms of the 400 ms budget are left.
+  const out = await hook('prompt', box, { adapters: { hostedSearch }, t0: started - 300 });
+  const elapsed = performance.now() - started;
+  assert.deepEqual(out, { stdout: '' });
+  assert.ok(elapsed >= 80 && elapsed < 250, `took ${elapsed} ms`);
+  assert.equal(signal.aborted, true);
+  const runs = (await readEvents(box.dir)).filter((e) => e.type === 'run');
+  assert.deepEqual(runs.map((r) => r.outcome), ['timeout']);
+  // latency_ms counts from the same instant, so it is not shorter than the budget.
+  assert.ok(runs[0].latency_ms >= 400 && runs[0].latency_ms < 550, `latency_ms ${runs[0].latency_ms}`);
+});
+
 test('prompt: a result that arrives after the deadline is not printed or remembered', async () => {
   const box = await sandbox();
   await hostedConfig(box.dir, { deadlineMs: { hosted: 200 } });
@@ -295,6 +313,21 @@ localTest('prompt: a vault held under an exclusive lock gives skipped:busy, no o
   // A busy vault is not a breaker failure.
   const state = JSON.parse(await fsp.readFile(sessionFile(box), 'utf8').catch(() => '{}'));
   assert.ok(!state.openUntil);
+});
+
+localTest('prompt: a vault.db that is not a database gives no output, an error run and one hook.log line without the prompt', async () => {
+  const box = await sandbox();
+  await enable(box.dir);
+  await fsp.writeFile(vaultFile(box.dir), Buffer.from('these are my notes, not a database\n'.repeat(40)));
+  assert.deepEqual(await hook('prompt', box), { stdout: '' });
+  const runs = (await readEvents(box.dir)).filter((e) => e.type === 'run');
+  assert.deepEqual(runs.map((r) => r.outcome), ['error']);
+  const log = await fsp.readFile(path.join(box.dir, 'suggest', 'hook.log'), 'utf8');
+  assert.equal(log.trim().split('\n').length, 1);
+  assert.ok(!log.includes('recurring jobs'));
+  // A damaged vault is not a transport failure: the breaker stays closed.
+  const state = JSON.parse(await fsp.readFile(sessionFile(box), 'utf8').catch(() => '{}'));
+  assert.ok(!state.openUntil && !state.failures);
 });
 
 // ---- warmup ----

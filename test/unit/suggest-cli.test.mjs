@@ -169,6 +169,18 @@ test('with no vault suggest exits 0 with empty stdout, with and without --json, 
   assert.equal(existsSync(path.join(state, 'vault.db')), false);
 });
 
+localTest('a vault.db that is not a database is reported like search does: exit 2, the damaged-vault line, file untouched', async () => {
+  const box = await sandbox();
+  const file = path.join(box.state, 'vault.db');
+  const junk = Buffer.from('these are my notes, not a database\n'.repeat(40));
+  await fsp.writeFile(file, junk);
+  const res = await runCli(['suggest', PROMPT], box.env);
+  assert.equal(res.code, 2, res.stdout + res.stderr);
+  assert.equal(res.stderr, `headjack: vault ${file} is damaged; run headjack verify\n`);
+  assert.equal(res.stdout, '');
+  assert.deepEqual(await fsp.readFile(file), junk);
+});
+
 localTest('a short prompt and a prompt nothing matches exit 0 with a one-line note', async () => {
   const { env } = await seeded();
   const short = await runCli(['suggest', 'too short'], env);

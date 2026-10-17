@@ -313,11 +313,12 @@ async function main(argv) {
           const missing = checkMinimums(rows);
           if (missing.length) throw new UserError(`the eval set ${evalFile(ctx.dir)} is too small to calibrate (it needs 20 rows per language, 8 of them with slug: null):\n  ${missing.join('\n  ')}`);
           // The mode follows --mode, else suggest.hosted only, never HEADJACK_MODE or HEADJACK_URL. Each row is searched once
-          // with purpose eval and entry eval: no log, no active state. Nothing is written, config.json included.
+          // with purpose eval and entry eval: no log, no active state. Like the manual entry, it migrates the vault, so a
+          // plugin update that adds migrations does not skip every row. config.json is never written.
           const mode = asked ?? (config.suggest.hosted ? 'hosted' : 'local');
           const report = await calibrate({
             rows, mode, config, cwd: ctx.cwd, home: ctx.home,
-            depsFor: (sessionId) => suggestDeps({ ctx, config, sessionId, purpose: 'eval' }),
+            depsFor: (sessionId) => suggestDeps({ ctx, config, sessionId, purpose: 'eval', migrate: true }),
           });
           // The kept search records stay out of the JSON: they are working data, not the report.
           console.log(o.json ? JSON.stringify({ ...report, rows: report.rows.map(({ record, ...row }) => row) }, null, 2) : formatCalibration(report));
