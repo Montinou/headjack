@@ -208,3 +208,27 @@ test('preview adds vercel origins', () => {
     assert.deepEqual(clerk.clerkAuthorizedParties({ ...preview, VERCEL_ENV, CLERK_AUTHORIZED_PARTIES: origin }), [origin]);
   }
 });
+
+test('POST /api/search is a read: skills:read is enough and a cookie session needs no Origin', async () => {
+  const search = (options = {}) => new Request(`${origin}/api/search`, { method: 'POST', ...options });
+  const reader = setup({ tokenType: 'api_key', userId: 'user_A', scopes: ['skills:read'] });
+  assert.equal((await reader(search())).refId, 'clerk:user_A');
+  await assert.rejects(reader(request({ method: 'POST' })), { name: 'ForbiddenError' });
+  await assert.rejects(setup({ tokenType: 'api_key', userId: 'user_A', scopes: ['openid'] })(search()), { name: 'ForbiddenError' });
+  assert.equal((await setup()(search())).refId, 'clerk:user_A');
+  assert.equal((await setup()(search({ headers: { origin: 'https://evil.test' } }))).refId, 'clerk:user_A');
+  await assert.rejects(setup()(request({ method: 'POST' })), { name: 'ForbiddenError' });
+  // Only that exact path: a look-alike path or another method stays a write.
+  for (const url of [`${origin}/api/search/x`, `${origin}/api/searchx`, `${origin}/api/skills`]) {
+    await assert.rejects(reader(new Request(url, { method: 'POST' })), { name: 'ForbiddenError' }, url);
+  }
+  await assert.rejects(reader(new Request(`${origin}/api/search`, { method: 'PUT' })), { name: 'ForbiddenError' });
+  assert.equal((await reader(new Request(`${origin}/api/search?x=1`, { method: 'POST' }))).refId, 'clerk:user_A');
+});
+
+test('oat_ with only skills:read is admitted on POST /api/search but not on POST /api/skills', async () => {
+  const { resolve } = oauthSetup();
+  const searchPost = new Request(`${origin}/api/search`, { method: 'POST', headers: { authorization: `Bearer ${oat}` } });
+  assert.equal((await resolve(searchPost)).refId, 'clerk:user_A');
+  await assert.rejects(resolve(bearer(oat, { method: 'POST' })), { name: 'ForbiddenError' });
+});

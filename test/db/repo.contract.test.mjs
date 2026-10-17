@@ -75,7 +75,7 @@ function contract(label, makeRepo, define = test) {
 
     assert.deepEqual(json(await repo.getSkillsByIds([r.skillId])), [{
       id: r.skillId, slug: m.slug, name: m.name, description: m.description, kind: 'skill', plugin_slug: null,
-      tags: m.tags, quality: null, update_available: false,
+      tags: m.tags, quality: null, review_notes: 'ok', update_available: false,
     }]);
     assert.deepEqual(await repo.getSkillsByIds([]), []);
 

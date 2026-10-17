@@ -19,7 +19,8 @@ The same contract is what local mode implements in process over a SQLite file, s
   (see the optional login at the end). **A server that accepts a bearer API key is complete**: the OAuth login is optional.
   A missing or invalid token is `401`.
 - **Scopes.** A server may require a read permission for the `GET` routes and a write permission for `POST /api/skills`.
-  The names the client uses when it asks for them are `skills:read` and `skills:write`. A token without the permission an
+  `POST /api/search` is a read: it needs only `skills:read`, never `skills:write`. The names the client uses when it asks
+  for them are `skills:read` and `skills:write`. A token without the permission an
   operation needs is `403`.
 - **Content type.** Answers are JSON (`content-type: application/json`), except the download, which is `application/gzip`,
   and `POST /api/events/install`, which answers `204` with no body. A request body the client sends is JSON, except the
@@ -33,7 +34,7 @@ The same contract is what local mode implements in process over a SQLite file, s
 
   `code` is a short machine word and `message` is one line for a person. A body that is not that shape is tolerated: the
   client then reports `HTTP <status>`. The codes the handlers in `lib/handlers.mjs` (what local mode runs) answer with are `bad_request` (400), `hash_mismatch` (400),
-  `unauthorized` (401), `forbidden` (403), `not_found` (404), `conflict` (409), `internal` (500) and `unavailable` (503).
+  `unauthorized` (401), `forbidden` (403), `not_found` (404), `conflict` (409), `payload_too_large` (413, only `POST /api/search`), `internal` (500) and `unavailable` (503).
   The client branches on the status, never on the text of `message`.
 - **Slugs.** A slug matches `^[A-Za-z0-9._@:-]{1,200}$`. It goes into the path percent-encoded; a slug that does not match
   is `400 bad_request`.
@@ -43,7 +44,7 @@ The same contract is what local mode implements in process over a SQLite file, s
   - `x-headjack-session`: an opaque id of the agent session (letters, digits and `-`, at most 64 characters), sent on every
     request when the client knows one. A server may use it to group the requests of a session for measurement. It is never
     an authorization input, and a value that does not match is to be treated as absent.
-  - `x-headjack-purpose`: sent by `GET /api/search` only, one of `suggest`, `plan`, `manual`, `eval` and `warmup`. The CLI
+  - `x-headjack-purpose`: sent by `GET /api/search` (and accepted on `POST /api/search`), one of `suggest`, `plan`, `manual`, `eval` and `warmup`. The CLI
     sends `manual` unless the caller passes `--purpose` or sets `HEADJACK_PURPOSE`. A server that records searches should
     record only `suggest`; any other value, or none, is `manual`. `headjack mcp` always sends `manual`.
 
@@ -92,12 +93,33 @@ Ranked search over the catalog. Query parameters:
 - `tag` (optional, repeatable, or comma-separated): every tag listed must be carried by a result.
 
 Answer `200`: `{ "results": [ ... ] }`, best first. Each result has `slug`, `name`, `description`, `kind`, `plugin_slug`,
-`tags` and `update_available` as in the skill record, and the ranking diagnostics `score`, `fts_rank`, `vector_rank`,
+`tags` and `update_available` as in the skill record, a `review` status (`unreviewed` when the current version's review
+notes start with `grandfathered:`, `plugin:` or `plugin skill:`, else `approved`; the notes themselves are not part of a
+search result), and the ranking diagnostics `score`, `fts_rank`, `vector_rank`,
 `similarity`, `matched` and `variant`. A result that stands for several installs of one plugin lists the other slugs in
 `alternatives`. The skill's `quality` is not part of a search result. The client uses `slug`, `name`, `description`, `kind`,
 `tags`, `update_available` and `alternatives`; the diagnostics are for evaluation and may be omitted.
 
 How a server ranks is its own business (`lib/search.mjs`, which local mode runs, fuses full-text and vector search).
+
+### POST /api/search
+
+Optional. The same search with the query in a JSON body, so the text of a prompt never appears in a request URL or in the
+logs that record URLs. It is needed only for hosted skill suggestions; `GET /api/search` stays the documented minimum, and
+a server without the `POST` route still serves every other client. It needs only the `skills:read` permission (the
+`POST` is a read), and it takes the same headers as the `GET`.
+
+Body (`content-type: application/json`, at most 4096 bytes):
+
+```json
+{ "q": "render a video", "k": 3, "kind": "skill", "tags": ["video"] }
+```
+
+- `q` (required, a non-empty string after trimming), `k` (optional, default 8, an integer from 1 to 25), `kind` (optional,
+  `skill` or `plugin`) and `tags` (optional, an array of strings; each must normalize to a non-empty tag) mean what the
+  `GET` parameters `q`, `k`, `kind` and `tag` mean.
+- Answer `200`: the same `{ "results": [ ... ] }` as the `GET`. A body over 4096 bytes is `413` with the code
+  `payload_too_large`. A body that is not a JSON object, or a field that is invalid, is `400` with the `GET`'s messages.
 
 ### GET /api/skills
 
