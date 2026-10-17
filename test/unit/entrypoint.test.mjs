@@ -18,6 +18,8 @@ test('entrypoint: --help prints "headjack"', async () => {
   assert.equal(help.code, 0, help.stderr);
   assert.match(help.stdout, /^headjack — /);
   assert.match(help.stdout, /^  headjack search /m);
+  assert.match(help.stdout, /^  headjack suggest "<text>" \[--json\] \[--explain\] \[--session-id <id>\]$/m);
+  assert.match(help.stdout, /^  headjack suggest --enable \[--hosted\|--local\] \| --disable$/m);
   const config = help.stdout.slice(help.stdout.indexOf('Config:'));
   for (const piece of ['HEADJACK_URL', 'HEADJACK_TOKEN', '<state dir>/token', '$HEADJACK_HOME', '~/.headjack', 'HEADJACK_PURPOSE']) assert.ok(config.includes(piece), `${piece} in ${config}`);
   const unknown = await run(['frobnicate']);

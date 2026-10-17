@@ -1,6 +1,6 @@
 # Headjack capability contract
 
-Contract version: 2
+Contract version: 3
 
 An agent workflow can use Headjack as its capability layer: a task names the skills it needs, and the implementer finds
 them, installs them for the task, and releases only the ones it added. This document lists the part of the `headjack`
@@ -10,6 +10,9 @@ here needs a new contract version.
 Version 2 renames the CLI to `headjack`, its environment inputs to `HEADJACK_*` and the session header to
 `x-headjack-session`. The commands, JSON shapes and exit codes are those of version 1.
 
+Version 3 is additive. Search results gain `review`, `active` also looks at skill directories, and the `suggest` command
+is new. Everything in version 2 is unchanged.
+
 Every bullet is pinned by a test: the shapes, exit codes and environment inputs in `test/unit/contract.test.mjs`; the
 `add --source` values, an invalid `--purpose` or `--source` (exit 2) and the dropped invalid session id in
 `test/unit/entrypoint.test.mjs`; `remove --from` in `test/unit/install.test.mjs`.
@@ -18,7 +21,10 @@ Every bullet is pinned by a test: the shapes, exit codes and environment inputs 
 
 - **`search "<q>" -k N --json [--purpose <p>]`**: prints a JSON array of results. Each result carries the vault row
   fields (`slug`, `name`, `description`, `kind`, `plugin_slug`, `tags`, `update_available`), the fused `score`, and
-  `active` (true when the skill, its plugin or an alternative install is active locally or enabled in Claude Code).
+  `active` (true when the skill, its plugin or an alternative install is active locally, enabled in Claude Code, or
+  present as one of the skill directories of a detected harness or of `<cwd>/.claude/skills`; a directory named like the
+  slug marks only a standalone vault skill, never a plugin row), and `review`: `approved` or `unreviewed`, the review
+  status of the skill's current version (versions imported without a review count as `unreviewed`).
   It also carries the per-result search signals:
   - `fts_rank`: 1-based position in the full-text list, or `null` when absent from it.
   - `vector_rank`: 1-based position in the vector list, or `null` when absent from it.
@@ -27,6 +33,20 @@ Every bullet is pinned by a test: the shapes, exit codes and environment inputs 
   - `variant`: `rrf-english` or `rrf-bilingual`, the path that answered.
 
   `<p>` is one of `suggest|plan|manual|eval|warmup` (default `manual`); an invalid value exits 2.
+- **`suggest "<text>" [--json] [--explain] [--session-id <id>]`**: searches the vault for skills that fit `<text>` and
+  prints the ones that are not active, as a `<headjack-suggestions>` block with the install command. It always uses the
+  search chosen by `suggest.hosted` in `config.json` (local by default), never `HEADJACK_MODE` or `HEADJACK_URL`.
+  - `--json` prints `{ outcome, mode, suggestions, candidates }`. `outcome` is `suggested`, `none`, `skipped:<reason>` or `error` (the
+    active skills could not be read, for example a corrupt `state.json`; the object is printed and the exit code is 1).
+  - `--explain` also lists every candidate with its signals, `active`, `review` and `rejected_by`.
+  - `--session-id <id>` (must match `^[A-Za-z0-9-]{1,64}$`, else exit 2) remembers what was suggested, so a later call
+    with the same id does not repeat it. Without it nothing is remembered.
+  - Exit 0 for `skipped:*` and for no results. With no local vault (`skipped:no-vault`) stdout is empty, `--json`
+    included. Exit 2 for a bad flag, a bad `--session-id` or a malformed `suggest` key in `config.json`; 3 for a network
+    failure or HTTP 5xx of the hosted search; 1 for the `error` outcome.
+  - `suggest --enable [--hosted|--local]` and `suggest --disable` edit `suggest.enabled` (and `suggest.hosted`) in
+    `config.json`; `--hosted` with `--local` exits 2.
+  - Each run appends one `run` event with `entry: manual` to `<state dir>/suggest/log.jsonl`. It never holds the text.
 - **`add <slug> --to <harness> [--session] [--source <s>]`**: exits 0 on success, and also when the slug is already
   installed. `<s>` is one of `suggest|plan|manual` (default `manual`); an invalid value exits 2.
 - **`list --json`**: prints the raw state entries.

@@ -1,4 +1,4 @@
-// Capability contract v2 (docs/capability-contract.md): one test per bullet, against the real CLI spawned as
+// Capability contract v3 (docs/capability-contract.md): one test per bullet, against the real CLI spawned as
 // a process and a local stub vault on 127.0.0.1. The search route is served by the real `createHandlers(...).search`
 // over a fake repo, so the per-result signals come from the handler, not from the stub.
 import { test } from 'node:test';
@@ -119,7 +119,7 @@ test('contract: search -k N --json --purpose returns the handler fields and sign
 
     const results = JSON.parse(res.stdout);
     assert.deepEqual(results.map((r) => r.slug), ['remotion-render', 'humanizer', 'noncore-plugin@example']);
-    const fields = ['slug', 'name', 'description', 'kind', 'plugin_slug', 'tags', 'update_available', 'score', 'fts_rank', 'vector_rank', 'similarity', 'matched', 'variant', 'active'];
+    const fields = ['slug', 'name', 'description', 'kind', 'plugin_slug', 'tags', 'update_available', 'score', 'fts_rank', 'vector_rank', 'similarity', 'matched', 'variant', 'review', 'active'];
     for (const r of results) {
       for (const f of fields) assert.ok(Object.hasOwn(r, f), `${r.slug} lacks ${f}`);
       assert.ok(!Object.hasOwn(r, 'id') && !Object.hasOwn(r, 'quality'), `${r.slug} leaks internal columns`);
@@ -128,6 +128,7 @@ test('contract: search -k N --json --purpose returns the handler fields and sign
       assert.ok(r.vector_rank === null || (Number.isInteger(r.vector_rank) && r.vector_rank >= 1));
       assert.ok(r.similarity === null || typeof r.similarity === 'number');
       assert.equal(typeof r.active, 'boolean');
+      assert.ok(r.review === 'approved' || r.review === 'unreviewed', `${r.slug} review: ${r.review}`);
     }
     const by = Object.fromEntries(results.map((r) => [r.slug, r]));
     assert.deepEqual(
@@ -315,4 +316,21 @@ test('contract: a failing install event endpoint does not change the exit code o
   } finally {
     await srv.close();
   }
+});
+
+test('contract: the document states version 3 and lists review, the extended active and the suggest command', async () => {
+  const doc = await readFile(new URL('../../docs/capability-contract.md', import.meta.url), 'utf8');
+  assert.match(doc, /^Contract version: 3$/m);
+  for (const piece of ['`review`', 'approved', 'unreviewed', 'skill directories', '`suggest "<text>"', '--session-id', '--enable', 'skipped:no-vault', '`error`', '1 for the `error` outcome']) {
+    assert.ok(doc.includes(piece), `the contract document lacks ${piece}`);
+  }
+});
+
+test('contract: suggest exits 0 and prints nothing for a user with no local vault; a bad --session-id exits 2', async () => {
+  const home = await tempDir('sv-home-');
+  const quiet = await run(['suggest', 'please run my recurring jobs periodically using cron'], { HOME: home, HEADJACK_HOME: path.join(home, 'hj') });
+  assert.equal(quiet.code, 0, quiet.stdout + quiet.stderr);
+  assert.equal(quiet.stdout, '');
+  const bad = await run(['suggest', 'please run my recurring jobs periodically using cron', '--session-id', '../x'], { HOME: home, HEADJACK_HOME: path.join(home, 'hj') });
+  assert.equal(bad.code, 2, bad.stdout + bad.stderr);
 });

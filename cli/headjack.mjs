@@ -2,6 +2,7 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { access, readFile } from 'node:fs/promises';
 import { UserError, EofError } from '../lib/errors.mjs';
 import { loadUrl, resolveMode } from './config.mjs';
@@ -9,7 +10,7 @@ import { tokenFile } from './credentials.mjs';
 import { stateDir } from './local-config.mjs';
 import { guardLocal, openApi } from './connect.mjs';
 import { exitCodeFor } from './exit.mjs';
-import { loadState, findEntry } from './state.mjs';
+import { activeKeys, isActive } from './active.mjs';
 import { add, remove, list, verify, gc, cleanup } from './install.mjs';
 import { review } from './review.mjs';
 import { planImport, runImport, trim, restore } from './import.mjs';
@@ -26,6 +27,8 @@ const USAGE = `headjack — personal skill vault
   headjack add <slug> [--to claude,codex,grok|all|<id,…>] [--project] [--session] [--source suggest|plan|manual]
   headjack remove <slug> [--from <id,…>] [--if-session]
   headjack cleanup [--harness <id,…>] [--older-than 12h|30m|2d] [--dry-run]
+  headjack suggest "<text>" [--json] [--explain] [--session-id <id>]
+  headjack suggest --enable [--hosted|--local] | --disable
   headjack list [--active] [--json]
   headjack harness detect
   headjack review <github-url|git-url|path> [--path sub/dir] [--slug s]
@@ -37,6 +40,10 @@ const USAGE = `headjack — personal skill vault
   headjack restore <backup-dir>
   headjack gc
   headjack mcp
+
+suggest searches the vault for skills that fit <text> and prints the ones you do not have (nothing when the vault is
+missing). --enable / --disable turn the prompt hook's suggestions on and off in <state dir>/config.json; --hosted / --local
+pick the search the hook uses. --session-id <id> remembers what was suggested for that session.
 
 Harness ids: claude, codex, grok and any that "harness detect" finds (gemini, cursor, windsurf, …);
 "all" = every detected one. --session marks the install so that "cleanup" removes it.
@@ -74,6 +81,12 @@ const OPTIONS = {
   purpose: { type: 'string' },
   'if-session': { type: 'boolean' },
   force: { type: 'boolean' },
+  'session-id': { type: 'string' },
+  explain: { type: 'boolean' },
+  enable: { type: 'boolean' },
+  disable: { type: 'boolean' },
+  hosted: { type: 'boolean' },
+  local: { type: 'boolean' },
 };
 
 const SOURCES = ['suggest', 'plan', 'manual'];
@@ -93,14 +106,6 @@ const KEEP_REASON = {
   managed: 'installed by headjack',
 };
 
-// Read-only view of ~/.claude/settings.json for `search`; an unreadable or malformed file counts as nothing enabled.
-async function enabledPlugins(home) {
-  try {
-    const on = JSON.parse(await readFile(path.join(home, '.claude', 'settings.json'), 'utf8'))?.enabledPlugins;
-    return on && typeof on === 'object' ? on : {};
-  } catch { return {}; }
-}
-
 // The plugin's own version, for the MCP server info. A missing or unreadable manifest must not stop the server.
 async function pluginVersion() {
   try {
@@ -119,6 +124,16 @@ function mcpEnvironment(env) {
     try { origin = loadUrl(env); } catch { /* the generic hosted text */ }
   }
   return { mode, origin };
+}
+
+const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable';
+const dash = (v) => (v === null || v === undefined ? '-' : v);
+
+// One --explain line per candidate: the signals, then what the filters decided.
+function explainLine(c, slugPattern) {
+  const slug = typeof c.slug === 'string' && slugPattern.test(c.slug) ? c.slug : '<invalid slug>';
+  const signals = ['fts_rank', 'vector_rank', 'similarity', 'table_rank', 'bm25_gap', 'matched_terms'].map((k) => `${k}=${dash(c[k])}`);
+  return `  ${slug}  ${signals.join(' ')}  active=${c.active} review=${c.review} passed=${c.passed} rejected_by=${dash(c.rejected_by)}`;
 }
 
 function need(value, usage) {
@@ -216,19 +231,71 @@ async function main(argv) {
         await connect();
         const tags = (o.tag ?? []).flatMap((t) => t.split(',')).map((t) => t.trim()).filter(Boolean);
         const results = await ctx.api.search(q, o.k ? Number(o.k) : 8, undefined, tags, purpose);
-        const state = await loadState(ctx.dir);
-        const enabled = await enabledPlugins(home);
-        const pluginKey = (r) => r.plugin_slug ?? (r.kind === 'plugin' ? r.slug : null);
-        // An alternative is another install of the same plugin skill: "<plugin>@<marketplace>:<skill>".
-        const altPluginKey = (slug) => (slug.lastIndexOf(':') > 0 ? slug.slice(0, slug.lastIndexOf(':')) : null);
-        const isActive = (r) => {
-          const plugins = [pluginKey(r), ...(r.alternatives ?? []).map(altPluginKey)].filter(Boolean);
-          return [r.slug, ...plugins].some((key) => findEntry(state, key)) || plugins.some((key) => enabled[key] === true);
-        };
-        const rows = results.map((r) => ({ ...r, active: isActive(r) }));
+        const keys = await activeKeys(ctx);
+        const rows = results.map((r) => ({ ...r, active: isActive(r, keys) }));
         if (o.json) console.log(JSON.stringify(rows, null, 2));
         else if (!rows.length) console.log('no results');
         else for (const r of rows) console.log(`${r.active ? '●' : '○'} ${r.slug}  [${r.kind}${r.update_available ? ', update' : ''}]\n    ${r.description}${r.tags?.length ? `\n    tags: ${r.tags.join(', ')}` : ''}${r.alternatives?.length ? `\n    also: ${r.alternatives.join(', ')}` : ''}`);
+        return 0;
+      }
+      case 'suggest': {
+        const text = args.join(' ').trim();
+        if (o.enable && o.disable) throw new UserError('--enable and --disable cannot go together');
+        if (o.hosted && o.local) throw new UserError('--hosted and --local cannot go together');
+        if ((o.hosted || o.local) && !o.enable) throw new UserError('--hosted and --local go with --enable (headjack suggest --enable --hosted)');
+        const { loadSuggestConfig, editSuggestConfig } = await import('../lib/suggest-config.mjs');
+        if (o.enable || o.disable) {
+          if (text) throw new UserError(`--enable and --disable take no text (usage: headjack ${SUGGEST_USAGE})`);
+          await editSuggestConfig(ctx.dir, { suggest: { enabled: Boolean(o.enable), ...(o.hosted ? { hosted: true } : o.local ? { hosted: false } : {}) } });
+          const config = await loadSuggestConfig(ctx.dir);
+          console.log(`suggestions ${config.suggest.enabled ? 'enabled' : 'disabled'} (${config.suggest.hosted ? 'hosted' : 'local'} search)`);
+          return 0;
+        }
+        need(text, SUGGEST_USAGE);
+        const [{ suggest, formatBlock }, { SLUG_RE }, { localSearch }, { hostedSearch }, { appendEvent }, { sessionStore, SESSION_ID_RE }] = await Promise.all([
+          import('../lib/suggest.mjs'), import('../lib/handlers.mjs'), import('../lib/suggest-local.mjs'), import('../lib/suggest-hosted.mjs'),
+          import('../lib/suggest-log.mjs'), import('../lib/suggest-session.mjs'),
+        ]);
+        const sessionId = o['session-id'];
+        // The id names a file under <state dir>/suggest/sessions, so anything outside the pattern stops here.
+        if (sessionId !== undefined && !SESSION_ID_RE.test(sessionId)) throw new UserError('--session-id must match ^[A-Za-z0-9-]{1,64}$');
+        const config = await loadSuggestConfig(ctx.dir);
+        const mode = config.suggest.hosted ? 'hosted' : 'local';
+        // The mode follows suggest.hosted only, never HEADJACK_MODE or HEADJACK_URL; the manual entry also migrates the vault.
+        const deps = {
+          search: (query, searchMode) => (searchMode === 'hosted'
+            ? hostedSearch({ env: process.env, dir: ctx.dir, config, query, purpose: 'suggest', sessionId })
+            : localSearch({ dir: ctx.dir, query, migrate: true })),
+          activeKeys: () => activeKeys(ctx),
+          sessionStore: sessionStore(ctx.dir),
+        };
+        const started = Date.now();
+        // The event carries no prompt text (spec §5.1); a failed search is logged as an 'error' run before it is reported.
+        const logRun = (r) => appendEvent(ctx.dir, {
+          type: 'run', entry: 'manual', session: sessionId ?? null, at: new Date(started).toISOString(), mode: r.mode, variant: r.variant,
+          latency_ms: r.latency_ms, outcome: r.outcome, lang_guess: r.lang_guess, active_keys: r.active_keys, candidates: r.candidates,
+        });
+        let result;
+        try {
+          result = await suggest({ text, entry: 'manual', sessionId, cwd: ctx.cwd, home: ctx.home, config, deps });
+        } catch (e) {
+          await logRun({ mode, variant: null, latency_ms: Date.now() - started, outcome: 'error', lang_guess: null, active_keys: [], candidates: [] });
+          throw e;
+        }
+        await logRun(result);
+        // No vault: stay silent, so a caller that runs this for every user prints nothing for a hosted-only one.
+        if (result.outcome === 'skipped:no-vault') return 0;
+        if (o.json) {
+          console.log(JSON.stringify({ outcome: result.outcome, mode: result.mode, suggestions: result.suggestions, candidates: result.candidates }, null, 2));
+          return result.outcome === 'error' ? 1 : 0;
+        }
+        if (result.outcome === 'error') throw new Error('could not read what is already installed (state.json); run headjack verify');
+        const url = result.mode === 'hosted' && !process.env.HEADJACK_URL ? config.suggest.url : undefined;
+        const block = formatBlock(result.suggestions, { mode: result.mode, launcher: fileURLToPath(new URL('./headjack', import.meta.url)), url });
+        console.log(block || `no suggestions (${result.outcome})`);
+        if (o.explain) {
+          console.log(result.candidates.length ? `candidates:\n${result.candidates.map((c) => explainLine(c, SLUG_RE)).join('\n')}` : 'candidates: none');
+        }
         return 0;
       }
       case 'add': {

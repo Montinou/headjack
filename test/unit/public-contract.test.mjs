@@ -73,10 +73,10 @@ test('the extractor reads the client: every route it is known to call is found',
   for (const expected of [
     'GET /api/search', 'GET /api/skills', 'GET /api/skills/{slug}', 'GET /api/skills/{slug}/download',
     'GET /api/skills/{slug}/versions', 'GET /api/skills/{slug}/reviews', 'POST /api/skills', 'GET /api/updates',
-    'POST /api/events/install', 'GET /.well-known/oauth-protected-resource/api',
+    'POST /api/search', 'POST /api/events/install', 'GET /.well-known/oauth-protected-resource/api',
     'GET /.well-known/oauth-authorization-server', 'GET /.well-known/openid-configuration',
   ]) assert.ok(clientRoutes.includes(expected), `${expected} is extracted from the client sources`);
-  assert.equal(clientRoutes.length, 12, `exactly the routes above, got ${clientRoutes.join(', ')}`);
+  assert.equal(clientRoutes.length, 13, `exactly the routes above, got ${clientRoutes.join(', ')}`);
 });
 
 test('server-contract.md: every METHOD path the client calls is written as that exact pair', () => {
