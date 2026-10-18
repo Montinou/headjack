@@ -6,13 +6,14 @@ on:
   push:
     tags: ['v*']
 
+# The workflow only reads the repository. Only the publish job may mint an OIDC token, and it runs no dependency code:
+# a token minted in the job that installs and tests the dependencies could be used by any of them to publish.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
-    name: publish @triqual/headjack
+  test:
+    name: check the tag and test
     # The private source repository carries this file too and must never publish.
     if: github.repository == 'Montinou/headjack'
     runs-on: ubuntu-latest
@@ -23,7 +24,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # No dependency cache in a publish job: the release is built from a clean install.
+      # No dependency cache in a release workflow: the tests run on a clean install.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
@@ -46,6 +47,28 @@ jobs:
             echo "::error::npm/package.json ($version) and .claude-plugin/plugin.json ($plugin) disagree"
             exit 1
           fi
+      - name: Install
+        run: npm ci
+      # The unit tests include test/unit/npm-smoke.test.mjs, which packs, installs and runs the package.
+      - name: Unit tests
+        run: npm run test:unit
+
+  publish:
+    name: publish @triqual/headjack
+    needs: test
+    if: github.repository == 'Montinou/headjack'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
       # Trusted publishing needs npm 11.5.1 or later.
       - name: npm 11.5.1 or later
         run: |
@@ -54,11 +77,7 @@ jobs:
             npm install -g npm@11
           fi
           npm --version
-      - name: Install
-        run: npm ci
-      # The unit tests include test/unit/npm-smoke.test.mjs, which packs, installs and runs the package.
-      - name: Unit tests
-        run: npm run test:unit
+      # The pack script imports only node: built-ins, so this job installs none of the repository's dependencies.
       - name: Pack
         run: node scripts/pack-npm.mjs "$RUNNER_TEMP/pkg"
       - name: Publish
