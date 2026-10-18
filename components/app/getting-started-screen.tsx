@@ -27,15 +27,16 @@ const PURPOSE: Record<string, ReactNode> = {
   "suggest-enable": (
     <>
       Let Claude Code offer vault skills that fit each prompt. Off until you
-      run this; the cleaned prompt text (at most 300 characters) is sent to
-      this server, which stores no prompt text. Without <code>--hosted</code> the
+      run this; the first 300 characters of each prompt (pasted blocks and
+      fenced code removed, no secret scan) are sent to this server, which
+      stores no prompt text. Without <code>--hosted</code> the
       search stays on your machine. <code>--disable</code> turns it off.
     </>
   ),
   add: "Install the approved version of a skill.",
   "add-session":
     "Install it as a session install, so that cleanup removes it later.",
-  pull: "Copy your approved skills from this workspace into the local vault, so local search and suggestions find them.",
+  pull: "Copy your approved skills from this workspace into the local vault, so local search and local-mode suggestions find them.",
   list: "List what is installed, as JSON.",
   verify: "Check the installed skills for problems.",
   "remove-session": (

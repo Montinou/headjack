@@ -1,6 +1,6 @@
 {
   "name": "headjack",
-  "description": "A personal vault for agent skills: import the skills you already have, then search and install them only when a task needs them, with optional skill suggestions on each prompt (off by default). Runs locally on SQLite, no server.",
+  "description": "A personal vault for agent skills: import the skills you already have, then search and install them only when a task needs them, with optional skill suggestions on each prompt (off by default). Runs locally on SQLite by default; hosted mode is optional.",
   "version": "0.5.3",
   "skills": "./skill-finder",
   "hooks": "./plugin-hooks/hooks.json",

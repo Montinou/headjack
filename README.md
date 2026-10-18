@@ -236,28 +236,32 @@ described under [Suggestions](#suggestions); unknown keys are ignored:
 
 The Claude Code plugin can offer vault skills while you work. With suggestions on, each prompt you send is searched
 against the vault, and when a skill that is not active yet fits it well, Claude sees a short `<headjack-suggestions>`
-block with the skill and the command that installs it for the session. Claude offers it; nothing is installed without
-your OK. Suggestions are off until you turn them on:
+block with the skill and the command that installs it for the session. Claude is told to offer it and to install
+nothing without your OK. Suggestions are off until you turn them on:
 
 ```sh
-headjack suggest --enable            # local vault search (the default)
-headjack suggest --enable --hosted   # search the instance named by HEADJACK_URL or suggest.url
+headjack suggest --enable            # turn on; keeps the current mode (local unless --hosted was set)
+headjack suggest --enable --hosted   # search the instance named by HEADJACK_URL, else suggest.url
+headjack suggest --enable --local    # back to the local vault
 headjack suggest --disable
 ```
 
 The setting lives in `config.json`, so it applies to every Claude Code session of that user. A prompt is not searched
 when it starts with `/`, is a short acknowledgement ("ok", "thanks"), sits under one of `suggest.disabledPaths`, or has
-fewer than 25 useful characters once pasted blocks and code are removed. A session is never offered the same skill twice.
+fewer than 25 useful characters once `<pasted_content>` blocks and fenced code are removed. A session is not offered the
+same skill twice (session state is kept for 24 hours).
 
-`headjack suggest "<text>"` runs the same search by hand and prints what the hook would offer (`--json` for agents,
+`headjack suggest "<text>"` runs the same search by hand, ignoring `enabled` and the skip rules (`--json` for agents,
 `--explain` for why each candidate was or was not offered, `--session-id <id>` to count it against a session). It prints
-nothing when there is no vault to search.
+nothing when local mode finds no vault.
 
-Local mode, the default, sends nothing anywhere. In hosted mode the cleaned request text (at most 300 characters, with
-pasted blocks and code removed) is sent to that server in a POST body. The server ranks with it (which includes an
-embeddings call through the AI Gateway) and stores no prompt text, at most an HMAC of it. The local log,
-`<state dir>/suggest/log.jsonl`, never holds the text you searched for, in either mode. [`SECURITY.md`](SECURITY.md)
-lists everything that leaves your machine.
+Local mode, the default, sends nothing anywhere. The mode follows `suggest.hosted` only, whatever `HEADJACK_MODE` says.
+In hosted mode the first 300 characters of the prompt, after removing `<pasted_content>` blocks and fenced code blocks,
+are sent to that server in a POST body. Inline code, indented code and anything else in those 300 characters are sent as
+typed: prompts get no secret scan. The server ranks with the text (which includes an embeddings call through the AI
+Gateway) and stores no prompt text, at most an HMAC of it. The local log, `<state dir>/suggest/log.jsonl`, never holds
+the text you searched for, in either mode. [`SECURITY.md`](SECURITY.md) lists what suggestions and enrichment send off
+your machine.
 
 The `suggest` section of `config.json` (every key optional):
 
@@ -265,14 +269,14 @@ The `suggest` section of `config.json` (every key optional):
 |---|---|---|
 | `enabled` | `false` | The hook searches each prompt. Set by `--enable` / `--disable`. |
 | `hosted` | `false` | Search the hosted instance instead of the local vault. Set by `--hosted` / `--local`. |
-| `url` | `null` | The hosted instance; `null` uses `HEADJACK_URL`. |
+| `url` | `null` | The hosted instance, used only when `HEADJACK_URL` is unset; `HEADJACK_URL` always wins. |
 | `maxSuggestions` | `2` | Most skills offered per prompt. |
 | `rule.maxRanks` | `2` | Hosted: a skill must rank this high or better in both the text and the meaning search (a skill first in the meaning search alone needs `minSimilarity` + 0.05). |
 | `rule.minSimilarity` | `0.45` | Hosted: the lowest meaning-search similarity offered. |
-| `rule.localMinGap` | `1.11` | Local: only the top match is offered, and its text score must lead the next skill's by this much (with no runner-up, it needs 2 matched words). |
+| `rule.localMinGap` | `1.11` | Local: only a skill ranked first in one of the searched tables (English, Spanish, glossary) is offered, and its text score must lead that table's next skill by this much (with no runner-up, it needs 2 matched words). |
 | `includeUnreviewed` | `true` | Offer skills not yet approved in `headjack review`; `false` offers approved ones only. |
 | `disabledPaths` | `[]` | Directories (absolute or `~/`) where prompts are never searched. |
-| `retiredPlugins` | `[]` | Plugins (`<plugin>@<marketplace>`) never offered. |
+| `retiredPlugins` | `["superpowers@superpowers-marketplace"]` | Plugins (`<plugin>@<marketplace>`) never offered; the built-in entry is always added to what the file lists. |
 | `deadlineMs` | `{ "local": 1000, "hosted": 3000 }` | Time budget per prompt (200–8000 ms); past it the prompt goes on without suggestions. |
 
 Three commands help you tune these settings:
