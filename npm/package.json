@@ -1,6 +1,6 @@
 {
   "name": "@triqual/headjack",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "A personal vault for agent skills: import the skills you already have, then search and install them only when a task needs them, with optional skill suggestions on each prompt (off by default). Runs locally on SQLite by default; hosted mode is optional.",
   "type": "module",
   "license": "MIT",
