@@ -1,21 +1,14 @@
-// writing-skills/SKILL.md teaches agents to write skills that skill-finder finds. These checks pin what the agent
-// evaluation showed it needs, and run the skill's own proof on itself: published next to skill-finder in the fixture
-// vault, with no high review flag, it must win the requests in test/fixtures/writing-skills-requests.txt.
+// writing-skills/SKILL.md (shipped in the plugin, never through the vault) teaches agents to write vault skills that
+// skill-finder finds. These checks pin what the agent evaluation showed it needs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { tempDir } from '../helpers.mjs';
-import { buildSkillFinderVault } from '../skill-finder-vault.mjs';
 
-const run = promisify(execFile);
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const md = await readFile(path.join(ROOT, 'writing-skills/SKILL.md'), 'utf8');
-const PROOF = path.join(ROOT, 'writing-skills/scripts/vault-proof.mjs');
 
 test('writing-skills has a short "Use when" description with no order in it', () => {
   assert.ok(md.startsWith('---\nname: writing-skills\ndescription: Use when '), 'frontmatter');
@@ -37,21 +30,5 @@ test('writing-skills teaches how search reads a skill and every proof step', () 
     'Publishing is theirs', 'headjack suggest --save --expect <slug>', // the baseline approved into the user's vault
   ]) assert.ok(md.includes(needle), needle);
   assert.ok(existsSync(path.join(ROOT, 'writing-skills/testing.md')), 'testing.md ships beside it');
-  assert.doesNotMatch(md, /curl \| sh|\| *sh\b/, 'a pipe-to-shell pattern, even as a warning, gets a high review flag');
-});
-
-test('published next to skill-finder, writing-skills is approved and wins its requests', async (t) => {
-  const work = await tempDir('ws-');
-  t.after(() => rm(work, { recursive: true, force: true }));
-  const real = await buildSkillFinderVault(path.join(work, 'real'));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('HEADJACK_')));
-  const box = path.join(work, 'box');
-  const scratch = await run(process.execPath, [PROOF, 'scratch', box, '--copy-vault', path.join(ROOT, 'writing-skills'), path.join(ROOT, 'skill-finder')],
-    { env: { ...env, HEADJACK_HOME: real } });
-  assert.match(scratch.stdout, /writing-skills: approved/);
-  assert.match(scratch.stdout, /skill-finder: approved/);
-  assert.doesNotMatch(scratch.stdout, /\[high\]/);
-  const check = await run(process.execPath, [PROOF, 'check', box, 'writing-skills', path.join(ROOT, 'test/fixtures/writing-skills-requests.txt')], { env })
-    .catch((e) => assert.fail(e.stdout));
-  assert.match(check.stdout, /14\/14 passed/);
+  assert.doesNotMatch(md, /curl \| sh|\| *sh\b/, 'the skill never shows a pipe-to-shell command, even as a warning');
 });

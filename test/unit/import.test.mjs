@@ -1041,3 +1041,40 @@ test('without config nothing is excluded: plan, import and trim treat ~/acme-wor
   const res = await trim({}, ctx);
   assert.deepEqual(report(res, 'gemini').remove, [path.join(home, '.gemini/skills/humanizer')], 'an identical copy under ~/acme-work goes');
 });
+
+// Headjack's own plugin (an invented marketplace key): its skills ship with the plugin, never through the vault.
+async function withHeadjackPlugin(home, { enabled = true } = {}) {
+  await makeDir({
+    'plugins/hj/.claude-plugin/plugin.json': JSON.stringify({ name: 'headjack', skills: ['./skill-finder', './writing-skills'] }),
+    'plugins/hj/skill-finder/SKILL.md': skillMd('skill-finder'),
+    'plugins/hj/writing-skills/SKILL.md': skillMd('writing-skills'),
+    'plugins/hj/cli/headjack': '#!/bin/sh\n',
+  }, home);
+  const installedFile = path.join(home, '.claude/plugins/installed_plugins.json');
+  const installed = JSON.parse(await readFile(installedFile, 'utf8'));
+  installed.plugins['headjack@acme-market'] = [{ scope: 'user', installPath: path.join(home, 'plugins/hj'), version: '0.5.4' }];
+  await writeFile(installedFile, JSON.stringify(installed));
+  const settingsFile = path.join(home, '.claude/settings.json');
+  const settings = JSON.parse(await readFile(settingsFile, 'utf8'));
+  settings.enabledPlugins['headjack@acme-market'] = enabled;
+  await writeFile(settingsFile, JSON.stringify(settings));
+}
+
+test('the plan never offers headjack itself or its skills to the vault', async () => {
+  const { home, ctx } = await fixtureHome();
+  await withHeadjackPlugin(home);
+  const e = bySlug(await planImport(ctx));
+  assert.equal(e['headjack@acme-market'].upload, false);
+  assert.match(e['headjack@acme-market'].note, /headjack itself/);
+  assert.deepEqual(Object.keys(e).filter((s) => s.startsWith('headjack@acme-market:')), [], 'no per-skill rows for its skills');
+});
+
+test('trim keeps headjack itself enabled even when it is not in the core', async () => {
+  const { home, ctx } = await fixtureHome({ core: CORE });
+  await withHeadjackPlugin(home);
+  await planImport(ctx);
+  await trim({}, ctx);
+  const on = JSON.parse(await readFile(path.join(home, '.claude/settings.json'), 'utf8')).enabledPlugins;
+  assert.equal(on['headjack@acme-market'], true);
+  assert.equal(on['noncore-plugin@example'], false, 'other non-core plugins are still trimmed');
+});

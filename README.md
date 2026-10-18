@@ -263,7 +263,9 @@ described under [Suggestions](#suggestions); unknown keys are ignored:
   before you import or install anything.
 - **`corePlugins`**: Claude Code plugins (`<plugin>@<marketplace>`) that stay enabled when `import --trim` disables
   the rest; `--keep a,b` adds to it for one run. Without it and without `--keep`, a trim leaves plugins as they are;
-  with `--keep` alone, a trim disables every plugin outside the `--keep` list (`headjack restore` undoes it).
+  with `--keep` alone, a trim disables every plugin outside the `--keep` list (`headjack restore` undoes it). The
+  Headjack plugin itself always stays enabled, and `import` never offers it or its skills (`skill-finder`,
+  `writing-skills`) to the vault: they ship with the plugin.
 
 ### Suggestions
 
