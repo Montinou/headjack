@@ -1,0 +1,29 @@
+{
+  "name": "@triqual/headjack",
+  "version": "0.5.3",
+  "description": "A personal vault for agent skills: import the skills you already have, then search and install them only when a task needs them, with optional skill suggestions on each prompt (off by default). Runs locally on SQLite by default; hosted mode is optional.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Montinou/headjack.git"
+  },
+  "homepage": "https://github.com/Montinou/headjack#readme",
+  "bin": {
+    "headjack": "cli/headjack.mjs"
+  },
+  "files": [
+    "cli",
+    "lib",
+    "skill-finder",
+    ".claude-plugin/plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.16"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

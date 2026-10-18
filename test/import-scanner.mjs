@@ -32,3 +32,6 @@ export async function importGraph(entry, { root = ROOT } = {}) {
   await walk(path.join(root, entry));
   return { files: [...seen].map((f) => path.relative(root, f)), external: [...external] };
 }
+
+// A line the static closure scan cannot follow: a computed import(), any require( or createRequire.
+export const escapesScan = (line) => /\bimport\s*\(\s*(?![\s'"])|\brequire\s*\(|\bcreateRequire\b/.test(line);
