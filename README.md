@@ -17,7 +17,9 @@ Cursor or another agent harness only when a task needs it. Keeping skills in the
 It has three parts:
 
 - **The `headjack` CLI**, which searches the vault and links skills into each harness's skills directory, scoped to a
-  project or a session when you ask. The `skill-finder` skill teaches an agent to use it. It has no npm dependencies.
+  project or a session when you ask. The `skill-finder` skill teaches an agent to use it, and the `writing-skills`
+  skill teaches an agent to write a skill that `skill-finder` finds, proving it in a scratch vault
+  ([`writing-skills/SKILL.md`](writing-skills/SKILL.md)). It has no npm dependencies.
 - **A local MCP server**, `headjack mcp`, for agents that search the vault over the Model Context Protocol, without a
   shell (see [`docs/mcp.md`](docs/mcp.md)).
 - **A hosted instance**, invite-only: a web app, a REST API and a read-only MCP route on top of the same catalog (see
@@ -90,6 +92,37 @@ To get there:
 `HEADJACK_URL` is set, and `HEADJACK_MODE=remote` insists on hosted mode. `HEADJACK_HOME` moves the state directory, and
 `HEADJACK_UPDATE_TTL_HOURS` sets how long an upstream check stays fresh (6 hours by default; 0 checks every time). The
 `vault.db` file is mode 600 in a directory of mode 700.
+
+## Install from npm
+
+The CLI and the local MCP server are also published to npm as `@triqual/headjack`, with no dependencies. It needs Node
+22.16 or later. A global install is the way to use it as an MCP server, because it puts `headjack` on your `PATH`:
+
+```sh
+npm install -g @triqual/headjack
+headjack --help
+```
+
+Then point any MCP client at it over stdio:
+
+```json
+{
+  "mcpServers": {
+    "headjack": { "command": "headjack", "args": ["mcp"] }
+  }
+}
+```
+
+To try it without installing anything, run it through `npx`:
+
+```sh
+npx -y @triqual/headjack mcp
+```
+
+The commands the MCP tools hand back (the install command, the login hint) start with `headjack`, so running them needs
+the global install. The npm package is the CLI, the MCP server and the `skill-finder` skill; the Claude Code plugin's
+prompt hooks still come from the plugin (see [Quickstart: local](https://github.com/Montinou/headjack#quickstart-local)
+and [`docs/mcp.md`](https://github.com/Montinou/headjack/blob/main/docs/mcp.md)).
 
 ## The web app
 
@@ -230,7 +263,9 @@ described under [Suggestions](#suggestions); unknown keys are ignored:
   before you import or install anything.
 - **`corePlugins`**: Claude Code plugins (`<plugin>@<marketplace>`) that stay enabled when `import --trim` disables
   the rest; `--keep a,b` adds to it for one run. Without it and without `--keep`, a trim leaves plugins as they are;
-  with `--keep` alone, a trim disables every plugin outside the `--keep` list (`headjack restore` undoes it).
+  with `--keep` alone, a trim disables every plugin outside the `--keep` list (`headjack restore` undoes it). The
+  Headjack plugin itself always stays enabled, and `import` never offers it or its skills (`skill-finder`,
+  `writing-skills`) to the vault: they ship with the plugin.
 
 ### Suggestions
 

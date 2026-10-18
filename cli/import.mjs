@@ -26,8 +26,19 @@ const harnessSkillDir = (home, h) => path.join(home, KNOWN_HARNESSES[h].global);
 const WORK_NOTE = 'under an excluded root: not uploaded';
 const CORE_NOTE = 'core plugin: always loaded, its skills are not indexed';
 const SINGLE_SKILL_NOTE = 'plugin with a single skill: the plugin row is enough';
+const SELF_NOTE = 'headjack itself: its skills ship with the plugin, never through the vault';
 // Notes the policy writes with upload: false. A re-plan recomputes these instead of carrying them forward.
-const POLICY_NOTES = new Set([WORK_NOTE, CORE_NOTE, SINGLE_SKILL_NOTE]);
+const POLICY_NOTES = new Set([WORK_NOTE, CORE_NOTE, SINGLE_SKILL_NOTE, SELF_NOTE]);
+
+// Headjack's own plugin: a plugin named headjack that ships skill-finder and the cli/headjack launcher. Its skills
+// (skill-finder, writing-skills) are part of the plugin, so import never offers them to the vault and trim never
+// disables it.
+async function isHeadjackPlugin(installPath) {
+  const meta = await readFile(path.join(installPath, '.claude-plugin', 'plugin.json'), 'utf8').then(JSON.parse, () => ({}));
+  return meta?.name === 'headjack'
+    && (await access(path.join(installPath, 'skill-finder', 'SKILL.md')).then(() => true, () => false))
+    && (await access(path.join(installPath, 'cli', 'headjack')).then(() => true, () => false));
+}
 
 async function readJson(file, fallback) {
   try { return JSON.parse(await readFile(file, 'utf8')); } catch (e) {
@@ -120,6 +131,13 @@ export async function planImport(ctx) {
     const marketplace = key.split('@')[1] ?? 'unknown';
     // A plugin installed under an excluded root (e.g. a `directory` marketplace) never leaves the machine.
     const work = isExcluded(await realpath(inst.installPath).catch(() => inst.installPath));
+    if (await isHeadjackPlugin(inst.installPath)) {
+      checkSlug({
+        slug: key, group: 'plugin', path: inst.installPath, version: inst.version ?? null, commit: inst.gitCommitSha ?? null,
+        source: { kind: 'marketplace', url: marketplace }, upload: false, note: SELF_NOTE,
+      });
+      continue;
+    }
     checkSlug({
       slug: key, group: work ? 'work' : 'plugin', path: inst.installPath, version: inst.version ?? null, commit: inst.gitCommitSha ?? null,
       source: { kind: 'marketplace', url: marketplace }, upload: work ? false : null,
@@ -356,6 +374,12 @@ async function trimRun(opts, ctx) {
     const known = new Set([...Object.keys(settingsData.enabledPlugins ?? {}), ...Object.keys(installed?.plugins ?? {})]);
     const stale = corePlugins.filter((k) => !known.has(k));
     if (stale.length) throw new UserError(`corePlugins entries match no installed plugin: ${stale.join(', ')}; fix ${path.join(ctx.dir, 'config.json')} before trimming`);
+  }
+  // Headjack's own plugin always stays: disabling it would take away the CLI's MCP server and its skills.
+  const installedNow = pluginsInScope ? await readJson(path.join(ctx.home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: {} }) : { plugins: {} };
+  for (const [key, installs] of Object.entries(installedNow?.plugins ?? {})) {
+    const list = Array.isArray(installs) ? installs : [installs];
+    if (list.some((i) => i?.installPath) && (await Promise.all(list.filter((i) => i?.installPath).map((i) => isHeadjackPlugin(i.installPath)))).some(Boolean)) keep.push(key);
   }
   const toDisable = pluginsInScope && plugins === 'trimmed'
     ? Object.entries(settingsData.enabledPlugins ?? {}).filter(([key, on]) => on && !keep.includes(key)).map(([key]) => key) : [];

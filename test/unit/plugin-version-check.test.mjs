@@ -1,4 +1,4 @@
-// The plugin version guard: a change to a file the plugin ships (cli/headjack, the CLI import closure, skill-finder/,
+// The plugin version guard: a change to a file the plugin ships (cli/headjack, the CLI import closure, skill-finder/, writing-skills/,
 // .claude-plugin/) must come with a plugin version change. Each case runs against a throwaway git repository.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,6 +27,7 @@ async function fixture(overrides = {}) {
     'lib/b.mjs': 'export const b = 1;\n',
     'lib/unshipped.mjs': 'export const u = 1;\n',
     'skill-finder/SKILL.md': '# skill\n',
+    'writing-skills/SKILL.md': '# writing\n',
     'plugin-hooks/hooks.json': '{}\n',
     '.claude-plugin/plugin.json': manifest('0.3.0'),
     'docs/x.md': 'docs\n',
@@ -44,7 +45,7 @@ async function commit(cwd, message = 'change') {
   git(cwd, 'commit', '-q', '-m', message);
 }
 
-test('shippedFiles lists the launcher, the CLI closure, skill-finder, plugin-hooks and the plugin manifest', async () => {
+test('shippedFiles lists the launcher, the CLI closure, skill-finder, writing-skills, plugin-hooks and the plugin manifest', async () => {
   const cwd = await fixture();
   assert.deepEqual(await shippedFiles({ cwd, ref: 'main' }), [
     '.claude-plugin/plugin.json',
@@ -54,6 +55,7 @@ test('shippedFiles lists the launcher, the CLI closure, skill-finder, plugin-hoo
     'lib/b.mjs',
     'plugin-hooks/hooks.json',
     'skill-finder/SKILL.md',
+    'writing-skills/SKILL.md',
   ]);
 });
 

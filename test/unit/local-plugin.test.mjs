@@ -19,14 +19,14 @@ function inGitCheckout() {
   }
 }
 
-test('the plugin manifest names headjack and points skills at a directory holding SKILL.md', () => {
+test('the plugin manifest names headjack and points skills at skill-finder and writing-skills, each holding SKILL.md', () => {
   const manifest = JSON.parse(read('.claude-plugin/plugin.json'));
   assert.equal(manifest.name, 'headjack');
   assert.equal(typeof manifest.description, 'string');
   assert.match(manifest.version, /^\d+\.\d+\.\d+/);
   assert.equal(manifest.license, 'MIT');
-  assert.equal(manifest.skills, './skill-finder');
-  assert.ok(existsSync(path.join(ROOT, manifest.skills, 'SKILL.md')), 'skills must point at a directory with SKILL.md');
+  assert.deepEqual(manifest.skills, ['./skill-finder', './writing-skills']);
+  for (const dir of manifest.skills) assert.ok(existsSync(path.join(ROOT, dir, 'SKILL.md')), `${dir} must hold SKILL.md`);
 });
 
 test('the manifest author is the name from LICENSE only, with no email, URL or repository', () => {
@@ -118,8 +118,9 @@ test('the README has Quickstart: local before Hosted (invite-only), and names HE
   assert.match(readme, /ln -s .*cli\/headjack/);
 });
 
-test('skill-finder/SKILL.md does not rely on CLAUDE_PLUGIN_ROOT', () => {
+test('the shipped skills do not rely on CLAUDE_PLUGIN_ROOT', () => {
   assert.doesNotMatch(read('skill-finder/SKILL.md'), /CLAUDE_PLUGIN_ROOT/);
+  assert.doesNotMatch(read('writing-skills/SKILL.md'), /CLAUDE_PLUGIN_ROOT/);
 });
 
 test('only lib/local/ mentions node:sqlite among the files under cli/ and lib/', () => {

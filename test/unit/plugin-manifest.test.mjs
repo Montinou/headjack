@@ -19,11 +19,13 @@ test('cli/headjack exists and is executable', () => {
   accessSync(launcher, constants.X_OK);
 });
 
-test('the skills path of the manifest exists and holds SKILL.md', () => {
-  assert.equal(typeof manifest.skills, 'string');
-  const dir = path.join(ROOT, manifest.skills);
-  assert.ok(statSync(dir).isDirectory(), `${manifest.skills} is a directory`);
-  assert.ok(existsSync(path.join(dir, 'SKILL.md')), 'the skills directory holds SKILL.md');
+test('every skills path of the manifest exists and holds SKILL.md', () => {
+  assert.ok(Array.isArray(manifest.skills) && manifest.skills.length > 0);
+  for (const rel of manifest.skills) {
+    const dir = path.join(ROOT, rel);
+    assert.ok(statSync(dir).isDirectory(), `${rel} is a directory`);
+    assert.ok(existsSync(path.join(dir, 'SKILL.md')), `${rel} holds SKILL.md`);
+  }
 });
 
 test('the plugin declares the headjack MCP server inline, at a semver version', () => {

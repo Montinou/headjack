@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { importGraph, specifiers } from '../import-scanner.mjs';
+import { importGraph, specifiers, escapesScan } from '../import-scanner.mjs';
 import { makeDir } from '../helpers.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -20,9 +20,6 @@ test('cli/headjack runs cli/headjack.mjs', async () => {
   assert.match(launcher, /^#!\/bin\/sh/);
   assert.match(launcher, /^exec node "\$root\/cli\/headjack\.mjs" "\$@"$/m);
 });
-
-// A line the static closure scan cannot follow: a computed import(), any require( or createRequire.
-const escapesScan = (line) => /\bimport\s*\(\s*(?![\s'"])|\brequire\s*\(|\bcreateRequire\b/.test(line);
 
 test('the closure escape check flags computed imports, require( and createRequire, and not spaced literals', () => {
   for (const bad of ['await import(name);', 'await import( name );', "require('x');", 'require ("x");', "const r = createRequire(import.meta.url);", 'import(`./${x}.mjs`);', 'await import('])
