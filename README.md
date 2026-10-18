@@ -17,7 +17,9 @@ Cursor or another agent harness only when a task needs it. Keeping skills in the
 It has three parts:
 
 - **The `headjack` CLI**, which searches the vault and links skills into each harness's skills directory, scoped to a
-  project or a session when you ask. The `skill-finder` skill teaches an agent to use it. It has no npm dependencies.
+  project or a session when you ask. The `skill-finder` skill teaches an agent to use it, and the `writing-skills`
+  skill teaches an agent to write a skill that `skill-finder` finds, proving it in a scratch vault
+  ([`writing-skills/SKILL.md`](writing-skills/SKILL.md)). It has no npm dependencies.
 - **A local MCP server**, `headjack mcp`, for agents that search the vault over the Model Context Protocol, without a
   shell (see [`docs/mcp.md`](docs/mcp.md)).
 - **A hosted instance**, invite-only: a web app, a REST API and a read-only MCP route on top of the same catalog (see

@@ -10,7 +10,7 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SOURCE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 // Every directory and file of the repository that can read the environment.
 const SOURCE_ROOTS = [
-  '.claude-plugin/', 'bin/', 'app/', 'components/', 'hooks/', 'lib/', 'cli/', 'db/', 'drizzle/', 'public/', 'skill-finder/', 'scripts/',
+  '.claude-plugin/', 'bin/', 'app/', 'components/', 'hooks/', 'lib/', 'cli/', 'db/', 'drizzle/', 'public/', 'skill-finder/', 'writing-skills/', 'scripts/',
   'flags.ts', 'proxy.ts', 'next.config.ts', 'drizzle.config.ts', 'playwright.config.ts', 'vercel.ts',
 ];
 
