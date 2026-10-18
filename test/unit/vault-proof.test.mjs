@@ -82,6 +82,34 @@ test('check passes when + requests find the skill first and suggest it, and - re
   assert.match(no.out, /0\/2 passed/);
 });
 
+test('scratch shows review flags and treats an unchanged skill as published', async (t) => {
+  const work = await tempDir('vp-');
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const real = await buildSkillFinderVault(path.join(work, 'real'));
+  const skill = await makeDir({ 'srt-subtitles/SKILL.md': SKILL, 'srt-subtitles/scripts/fix.mjs': 'console.log(1);\n' }, path.join(work, 'src'));
+  const box = path.join(work, "box with 'quote'");
+  const r = await proof(['scratch', box, '--copy-vault', path.join(skill, 'srt-subtitles')], { HEADJACK_HOME: real });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /flag: \[low\] script-file scripts\/fix\.mjs/);
+  // A second sandbox copied from the first: the same skill is already there, unchanged.
+  const again = await proof(['scratch', path.join(work, 'box2'), '--copy-vault', path.join(skill, 'srt-subtitles')], { HEADJACK_HOME: path.join(box, 'state') });
+  assert.equal(again.code, 0, again.out);
+  assert.match(again.out, /srt-subtitles: approved \(unchanged\)/);
+});
+
+test('check fails a line that suggest skipped instead of testing it', async (t) => {
+  const work = await tempDir('vp-');
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const skill = await makeDir({ 'srt-subtitles/SKILL.md': SKILL }, path.join(work, 'src'));
+  const box = path.join(work, 'box');
+  assert.equal((await proof(['scratch', box, path.join(skill, 'srt-subtitles')])).code, 0);
+  const file = path.join(work, 'short.txt');
+  await writeFile(file, '- pdf form\n');
+  const r = await proof(['check', box, 'srt-subtitles', file]);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /FAIL - pdf form .*suggest skipped/);
+});
+
 test('usage errors exit 2', async () => {
   assert.equal((await proof([])).code, 2);
   assert.equal((await proof(['check', '/nonexistent'])).code, 2);

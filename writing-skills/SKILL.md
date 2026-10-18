@@ -13,10 +13,12 @@ wrong, skill-finder finds it, it runs from the installed copy, and an agent that
 
 ## What search reads
 
-Headjack searches the `name` (weight 4), the `description` (3) and, from the body, each heading with the first
+A local vault searches the `name` (weight 4), the `description` (3) and, from the body, each heading with the first
 paragraph under it (1). Nothing else in the body is searched, code blocks never are, and `review` stores no tags.
-English words are stemmed and a request's words are ORed. Spanish matches only after `headjack enrich` or through a
-small glossary.
+English words are stemmed and a request's words are ORed. Search matches Spanish only through words in the skill;
+suggestions also use the text `headjack enrich` writes, or a small glossary. A hosted vault ranks on the name, tags
+and description (no body) plus meaning over the whole text; `vault-proof` tests local mode, so say so to a hosted
+user.
 
 ## Write it
 
@@ -50,7 +52,8 @@ Prove a new or rewritten skill with agents and the vault, in this order.
    from run to run, or rebuilt from scratch (a helper script each time): that is what the skill teaches. If the runs
    show none of it, tell the user, with the runs, and ask whether the skill is still worth writing.
 2. **A requests file.** `+` lines: 5 or more ways people ask (one vague, one naming the tool, one in Spanish if the
-   user writes Spanish). `-` lines: 3 near misses that another skill should win.
+   user writes Spanish). `-` lines: 3 near misses that another skill should win. Write each as a full request:
+   suggestions skip anything under 25 characters, and `check` fails a skipped line.
 3. **A scratch vault with the real catalog:** `vault-proof scratch "$(mktemp -d)/box" --copy-vault <skill-dir>`.
    It copies, read-only, the vault `HEADJACK_HOME` points at (default `~/.headjack`). Pass: `<slug>: approved` and no
    flag you cannot justify. Only if it reports no local vault (a hosted-only machine), run it without `--copy-vault`
@@ -59,8 +62,8 @@ Prove a new or rewritten skill with agents and the vault, in this order.
    - A `+` miss: put its words into the name, description or a heading's first sentence, then rebuild the scratch
      vault in a new folder and check again.
    - A `-` hit: the skill is too broad or overlaps the winner. Narrow it, or merge the two.
-   - A Spanish miss that only `headjack enrich` fixes: report it. Enrichment is the user's opt-in, since it sends the
-     skill's text to the AI Gateway.
+   - A Spanish miss: search needs the request's words in the skill; a suggestion can also come from `headjack
+     enrich`. Report which; enrichment is the user's opt-in, since it sends the skill's text to the AI Gateway.
 5. **Install:** `source <box>/env.sh && headjack add <slug> --to claude --session`, then run what the skill tells
    an agent to run, from `~/.claude/skills/<slug>/`. Then `headjack remove <slug> --from claude --if-session`.
 6. **GREEN, end to end.** The RED requests again, with fresh subagents that have skill-finder loaded instead of your
@@ -79,7 +82,7 @@ Give the user the folder, the requests file and each step's result. Name any of 
 skill without RED and GREEN is unproven, not done. Publishing is theirs: `headjack review
 <skill-dir>` on the real vault asks them whether it holds work or client content, then for approval. For each `+`
 request, offer `headjack suggest --save --expect <slug>` (the request on stdin) so their suggestion calibration
-covers the new skill.
+covers the new skill. Delete the box: it holds a copy of their vault.
 
 ## Red flags
 

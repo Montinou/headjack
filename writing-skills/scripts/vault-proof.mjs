@@ -23,8 +23,7 @@ const q = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;
 
 class Usage extends Error {}
 
-// The CLI next to this skill (the Headjack plugin and the npm package both ship cli/ beside writing-skills/), else
-// `headjack` on PATH.
+// The CLI next to this skill (the Headjack plugin ships cli/ beside writing-skills/), else `headjack` on PATH.
 function headjackCommand() {
   const bundled = path.resolve(HERE, '../../cli/headjack.mjs');
   if (existsSync(bundled)) return [process.execPath, bundled];
@@ -86,14 +85,16 @@ async function scratch(argv) {
   let failed = false;
   for (const skill of skills) {
     const r = await runCli(box, ['review', path.resolve(skill)], 'n\na\nscratch proof\n');
-    const outcome = /✓ (\S+) published/.exec(r.stdout);
-    if (outcome) console.log(`${outcome[1]}: approved`);
+    const published = /✓ (\S+) published/.exec(r.stdout);
+    const unchanged = /^== (\S+) .*\n[\s\S]*no changes from the approved version/m.exec(r.stdout);
+    if (published) console.log(`${published[1]}: approved`);
+    else if (unchanged) console.log(`${unchanged[1]}: approved (unchanged)`);
     else {
       failed = true;
       console.log(`${skill}: not approved\n${r.stdout}${r.stderr}`.trimEnd());
     }
-    const flags = r.stdout.split('\n').filter((l) => /^\s+(high|medium|low)\b|flag/i.test(l) && !/no flags/.test(l));
-    for (const f of flags) console.log(`  ${f.trim()}`);
+    // review prints each flag as "[severity] rule file[:line] …", sometimes on the same line as a piped prompt.
+    for (const m of r.stdout.matchAll(/\[(high|medium|low)\][^\n]*/g)) console.log(`  flag: ${m[0].trim()}`);
   }
   console.log(`sandbox ready: source ${path.join(box, 'env.sh')} && headjack …`);
   return failed ? 1 : 0;
@@ -119,8 +120,10 @@ async function check(argv) {
     const suggested = (suggest.suggestions ?? []).map((s) => s.slug);
     const found = first === slug;
     const offered = suggested.includes(slug);
-    const ok = sign === '+' ? found && offered : !found && !offered;
-    const detail = `search first: ${first ?? 'none'}; suggest: ${suggested.join(', ') || suggest.outcome || 'none'}`;
+    // A skipped suggest (a request under 25 characters, no vault) tested nothing: it fails either sign.
+    const skipped = String(suggest.outcome ?? '').startsWith('skipped');
+    const ok = !skipped && (sign === '+' ? found && offered : !found && !offered);
+    const detail = `search first: ${first ?? 'none'}; suggest: ${skipped ? `suggest skipped (${suggest.outcome})` : suggested.join(', ') || suggest.outcome || 'none'}`;
     console.log(`${ok ? 'pass' : 'FAIL'} ${sign} ${request}  (${detail})`);
     if (ok) passed++;
   }

@@ -26,7 +26,8 @@ test('writing-skills has a short "Use when" description with no order in it', ()
 
 test('writing-skills teaches how search reads a skill and every proof step', () => {
   for (const needle of [
-    'name` (weight 4)', 'code blocks never', 'stores no tags', 'headjack enrich', // what search reads
+    'name` (weight 4)', 'code blocks never', 'stores no tags', 'headjack enrich', 'A hosted vault', 'tests local mode', // what search reads
+    'under 25 characters', 'Delete the box',
     'Use when', 'No orders in the description', 'first sentence with the request', // writing for the index
     '${CLAUDE_SKILL_DIR}/scripts/vault-proof.mjs', 'scratch', '--copy-vault', 'check <box> <slug> <requests-file>',
     'RED, before writing', 'rebuilt from scratch', 'unproven, not done', 'near misses', 'Spanish', // baseline: one search, no misses, no Spanish
