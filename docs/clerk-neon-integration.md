@@ -30,7 +30,7 @@ is retained until an explicit data-deletion operation.
   `VERCEL_BRANCH_URL`; Clerk access on Preview is gated by the `clerk-auth` flag.
 - Signed-in browser writes require a trusted `Origin`, including session JWTs sent in Authorization headers.
 - OAuth and individual API keys require `skills:read` for GET/HEAD/OPTIONS and `skills:write` for mutations.
-  A client needing both must request both. OIDC `openid`, `profile`, and `email` scopes do not grant vault access.
+  `POST /api/search` is a read and needs `skills:read` only. A client needing both must request both. OIDC `openid`, `profile`, and `email` scopes do not grant vault access.
   Token issuance and the CLI/MCP OAuth client rollout are separate from this server-side integration.
 - REST OAuth tokens are resource-bound. A bearer starting with `oat_` is verified once per request with the provider,
   with the audience `HEADJACK_API_RESOURCE_URL` (canonical `https://<host>/api`): revoked, expired, missing-audience and

@@ -10,8 +10,10 @@ const EXPECTED = [
   "headjack --help",
   "headjack harness detect",
   'headjack search --purpose manual -- "render a video with remotion"',
+  "headjack suggest --enable --hosted",
   "headjack add -- 'your-skill'",
   "headjack add --session -- 'your-skill'",
+  "headjack pull",
   "headjack list --json",
   "headjack verify",
   "headjack remove --if-session -- 'your-skill'",
@@ -46,7 +48,7 @@ function shellSplit(command) {
   return words;
 }
 
-test("the guide shows exactly the eleven pinned commands", () =>
+test("the guide shows exactly the thirteen pinned commands", () =>
   assert.deepEqual(GUIDE_COMMANDS.map((entry) => entry.command), EXPECTED));
 
 test("the search command carries the label search", () =>

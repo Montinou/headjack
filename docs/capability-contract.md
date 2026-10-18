@@ -34,8 +34,9 @@ Every bullet is pinned by a test: the shapes, exit codes and environment inputs 
 
   `<p>` is one of `suggest|plan|manual|eval|warmup` (default `manual`); an invalid value exits 2.
 - **`suggest "<text>" [--json] [--explain] [--session-id <id>]`**: searches the vault for skills that fit `<text>` and
-  prints the ones that are not active, as a `<headjack-suggestions>` block with the install command. It always uses the
-  search chosen by `suggest.hosted` in `config.json` (local by default), never `HEADJACK_MODE` or `HEADJACK_URL`.
+  prints the ones that are not active, as a `<headjack-suggestions>` block with the install command. The mode follows
+  `suggest.hosted` in `config.json` only (local by default), never `HEADJACK_MODE`. A hosted search takes its address
+  from `HEADJACK_URL`, else `suggest.url`, and needs `POST /api/search` on the server.
   - `--json` prints `{ outcome, mode, suggestions, candidates }`. `outcome` is `suggested`, `none`, `skipped:<reason>` or `error` (the
     active skills could not be read, for example a corrupt `state.json`; the object is printed and the exit code is 1).
   - `--explain` also lists every candidate with its signals, `active`, `review` and `rejected_by`.
@@ -47,6 +48,16 @@ Every bullet is pinned by a test: the shapes, exit codes and environment inputs 
   - `suggest --enable [--hosted|--local]` and `suggest --disable` edit `suggest.enabled` (and `suggest.hosted`) in
     `config.json`; `--hosted` with `--local` exits 2.
   - Each run appends one `run` event with `entry: manual` to `<state dir>/suggest/log.jsonl`. It never holds the text.
+    The one file that holds prompt text is `<state dir>/suggest/cases.jsonl`, written only by `suggest --save`.
+  - Not part of the contract, and free to change without a new version (they are tested in `test/unit/suggest-*.test.mjs`,
+    not here): the diagnostics `suggest --report [--since 7d|12h|30m] [--json]`, which prints the outcome of past
+    suggestions from `log.jsonl`; `suggest --calibrate [--mode local|hosted] [--json]`, which searches the eval set
+    `<state dir>/suggest/eval.json` and prints precision and recall per language (a set with fewer than 20 rows per
+    language, 8 of them with `slug: null`, exits 2); and `suggest --save --expect <slug|none>
+    [--lang es|en]`, which appends the prompt, read from stdin or, on a terminal, from `$VISUAL` or `$EDITOR`, to
+    `cases.jsonl`. A misused flag exits 2, and none of them writes `config.json`.
+  - `headjack hook prompt|warmup|skill-used` is what the plugin hooks run. It is internal, not part of the contract: it
+    always exits 0 and prints nothing when it fails.
 - **`add <slug> --to <harness> [--session] [--source <s>]`**: exits 0 on success, and also when the slug is already
   installed. `<s>` is one of `suggest|plan|manual` (default `manual`); an invalid value exits 2.
 - **`list --json`**: prints the raw state entries.

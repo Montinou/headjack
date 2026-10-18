@@ -24,12 +24,18 @@ maintainer in and connect a machine.
    `npm run vercel-build` and a weekly cron for upstream checks. *Why:* the web app, the REST API and the cron run
    on it.
 2. **The database.** The instance's Neon database comes from the Vercel Marketplace; the integration injects
-   `DATABASE_URL` and `DATABASE_URL_UNPOOLED`, and its preview branching gives one database branch per preview. *Why:* the vault lives in Postgres, and
-   the `vector` extension powers search.
+   `DATABASE_URL` and `DATABASE_URL_UNPOOLED`, and its preview branching gives one database branch per preview. *Why:*
+   the vault lives in Postgres, and the `vector` extension powers search.
+
+   Neon limits the project to 10 branches, and each Vercel preview creates `preview/<git-branch>`. Past the limit the
+   preview fails with "Resource provisioning failed" (observed in production on 2026-10-17; the limit and the message come
+   from Neon and Vercel, not from this repository). Delete the preview branches of merged pull requests, or enable the
+   integration's automatic deletion of them.
 3. **Migrations need no manual step.** Every production and preview build applies the committed migrations in `drizzle/`
    before `next build` (see [`migrations.md`](migrations.md)). Migrations `0001_app_foundation` and `0009_rename_app_role`
-   leave the app role `headjack_app`, without a login. *Why:* the schema and the row-level-security policies arrive
-   with the deploy.
+   leave the app role `headjack_app`, without a login. Migration `0010_enrichment_version` adds the nullable column
+   `skills.enrichment_v` and sets it to 1 where `queries_es_text <> ''`; it makes no model call. *Why:* the schema and
+   the row-level-security policies arrive with the deploy.
 4. **The app role has a password**, set once per database branch with the owner-role URL given explicitly. A maintainer
    reads both values at a prompt rather than typing them on the command line, so they stay out of the shell history.
    The parentheses run the step in a subshell, so neither variable outlives the one command that needs it:
@@ -63,6 +69,16 @@ maintainer in and connect a machine.
    `headjack login` and `mcp-readonly` enables `/mcp`. *Why:* nothing user-facing is switched on by default.
 7. **The AI Gateway** is connected (`AI_GATEWAY_API_KEY` locally; on Vercel the OIDC token is used). *Why:* embeddings and
    skill enrichment go through it.
+
+   After a deploy that raises `ENRICHMENT_VERSION` (`lib/enrich-prompt.mjs`), re-enrich the Spanish example requests
+   written by the older prompt with `node scripts/backfill-queries-es.mjs --stale`. Run it again without `--stale` for
+   the rows that hold no text, because rows written by the old code during the build can have `''` with a version, which
+   only the default mode picks up. It makes one model call per skill and writes only `queries_es_text` and
+   `enrichment_v`. The other flags are `--dry-run` (also prints the generated queries), `--limit N`,
+   `--only slug1,slug2` and `--force` (every current version; it overrides `--stale`). It runs as the app role for one
+   owner (`HEADJACK_OWNER_ID`, else the initial owner), so it needs `DATABASE_URL_APP` or `DATABASE_URL` with
+   `HEADJACK_APP_DB_PASSWORD`, and the AI Gateway credential (`VERCEL_OIDC_TOKEN` or `AI_GATEWAY_API_KEY`), from the
+   environment or `.env.local`. It exits 1 when any skill failed.
 8. **Deploys.** A push to the production branch (or `vercel deploy --prod`) builds, and the build runs the
    migrations. *Why:* the variables and flags above take effect on a new deployment.
 9. **Invitations are accepted on the instance.** An invited person chooses **Accept invitation** and finishes the
@@ -107,7 +123,9 @@ maintainer in and connect a machine.
     and revoking the old one.
 11. **Optionally, `config.json`** in the state directory holds `excludedRoots` (and `corePlugins`), written before
     importing or installing anything. *Why:* directories listed there (a work folder, say) are never imported from or installed
-    into; see "State directory and `config.json`" in the [README](../README.md).
+    into; see "State directory and `config.json`" in the [README](../README.md). The same file holds the `suggest` and
+    `enrich` sections that configure skill suggestions and local enrichment (`lib/suggest-config.mjs`); see
+    "Suggestions" in the README.
 12. **Verification.** With `HEADJACK_URL` pointing at the instance:
 
     ```sh
@@ -130,7 +148,8 @@ refuses when the Clerk user already has a vault.
 **Optional pieces**, none needed for the path above: the MCP server ([`mcp.md`](mcp.md); behind the `mcp-readonly` flag),
 the cron secret `CRON_SECRET` (Vercel Cron sends it to the upstream-check route), `GITHUB_TOKEN` (raises the GitHub
 rate limit for upstream checks) and search telemetry (`SEARCH_EVENTS_HMAC_KEY`; without it, search exposure events
-are not recorded).
+are not recorded). The key covers both `GET /api/search` and the `POST /api/search` that hosted suggestions use: a
+`suggest` search with a valid session id stores an HMAC of the query, never its text.
 
 ## Inviting a user
 
@@ -159,12 +178,12 @@ each; `test/unit/env-example.test.mjs` keeps it complete. In short:
 | Database | `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `DATABASE_URL_APP`, `HEADJACK_APP_DB_PASSWORD`, `DATABASE_URL_OWNER` |
 | Authentication | `CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_AUTHORIZED_PARTIES` |
 | Flags | `FLAGS`, `FLAGS_SECRET` |
-| AI | `AI_GATEWAY_API_KEY`, `VERCEL_OIDC_TOKEN`, `EMBED_MODEL`, `ENRICH_MODEL` |
+| AI | `AI_GATEWAY_API_KEY` (also read by `headjack enrich`), `VERCEL_OIDC_TOKEN`, `EMBED_MODEL`, `ENRICH_MODEL` |
 | Server jobs | `CRON_SECRET`, `GITHUB_TOKEN`, `SEARCH_EVENTS_HMAC_KEY` |
 | OAuth | `HEADJACK_AUTH_SERVER_URL`, `HEADJACK_API_RESOURCE_URL`, `HEADJACK_CLI_CLIENT_ID` |
 | MCP | `MCP_RESOURCE_URL`, `MCP_ALLOWED_ORIGINS`, `MCP_CURSOR_SECRET` |
 | Scripts | `HEADJACK_OWNER_ID`, `HEADJACK_OVERRIDE_CONTROL`, `HEADJACK_OVERRIDE_BILINGUAL`, `TARGET`, `VERCEL_AUTOMATION_BYPASS_SECRET` |
-| CLI | `HEADJACK_MODE`, `HEADJACK_URL`, `HEADJACK_TOKEN`, `HEADJACK_HOME`, `HEADJACK_PURPOSE`, `HEADJACK_EXCLUDED_ROOTS`, `HEADJACK_UPDATE_TTL_HOURS` |
+| CLI | `HEADJACK_MODE`, `HEADJACK_URL`, `HEADJACK_TOKEN`, `HEADJACK_HOME`, `HEADJACK_PURPOSE`, `HEADJACK_EXCLUDED_ROOTS`, `HEADJACK_UPDATE_TTL_HOURS`, `HEADJACK_DEBUG`, `HEADJACK_MCP_TIMEOUT_MS` |
 
 For local work on the app, copy `.env.example` to `.env.local` (git ignores it) and fill in what you use. Never commit a
 value, and never paste one into an issue or a chat.
