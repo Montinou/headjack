@@ -3,7 +3,9 @@
 // appends each invocation to <sandbox>/commands.log before running the real CLI.
 //   node test/skill-finder-eval/sandbox.mjs <out-dir>     prints one line per scenario: <id> <sandbox dir>
 // An agent runs every command as: source <sandbox>/env.sh && <command>, from <sandbox>/project.
+import { execFile } from 'node:child_process';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildSkillFinderVault } from '../skill-finder-vault.mjs';
@@ -11,6 +13,7 @@ import { buildSkillFinderVault } from '../skill-finder-vault.mjs';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 export const SCENARIOS = JSON.parse(await readFile(new URL('./scenarios.json', import.meta.url), 'utf8'));
 
+const run = promisify(execFile);
 const q = (s) => `'${s.replaceAll("'", "'\\''")}'`;
 
 export async function buildSandbox(dir, scenario) {
@@ -23,6 +26,12 @@ export async function buildSandbox(dir, scenario) {
   for (const [rel, content] of Object.entries(scenario.files)) {
     await mkdir(path.dirname(path.join(project, rel)), { recursive: true });
     await writeFile(path.join(project, rel), content);
+  }
+  // A permanent install the user already had before this session (not logged: the agent did not run it).
+  for (const slug of scenario.preinstall ?? []) {
+    await run(process.execPath, [path.join(ROOT, 'cli/headjack.mjs'), 'add', slug, '--to', 'claude'], {
+      env: { ...process.env, HOME: home, HEADJACK_HOME: state, HEADJACK_MODE: 'local', HEADJACK_URL: '' },
+    });
   }
   const log = path.join(dir, 'commands.log');
   await writeFile(log, '');

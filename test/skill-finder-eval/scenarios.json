@@ -99,5 +99,19 @@
       "reports that the vault holds 0 skills and points to headjack import --dry-run / headjack import --interactive",
       "installs nothing and invents no skill"
     ]
+  },
+  {
+    "id": "already-installed",
+    "preinstall": [
+      "postgres-migrations"
+    ],
+    "prompt": "Add a nullable last_login column to the users table with a safe migration in migrations/002_last_login.sql, then clean up anything you installed.",
+    "files": {
+      "migrations/001_init.sql": "create table users (id serial primary key, email text not null);\n"
+    },
+    "pass": [
+      "sees postgres-migrations is already active and uses it without running headjack add for it",
+      "never runs headjack remove postgres-migrations without --if-session (it is a permanent install)"
+    ]
   }
 ]
