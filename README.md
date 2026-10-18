@@ -160,13 +160,15 @@ anywhere; `HEADJACK_MODE=local` brings it back at any time.
 
 **Copy hosted skills into the local vault.** `headjack pull` copies your approved hosted skills into the local vault. It
 needs `HEADJACK_URL` and a hosted credential, in either mode. A skill's archive is stored only when its content hash matches
-the hosted version; its review notes and Spanish example requests come along. A skill you changed in the local vault after
+the hosted version; its review notes and Spanish example requests come along. Plugins and the skills inside them have no
+archive, so they are copied from their hosted name, description and tags: they become searchable and suggestible
+locally, and `headjack add` enables the plugin in Claude Code as before. A skill you changed in the local vault after
 pulling it (or that was there before any pull) is never overwritten: while hosted has a newer version it is skipped with
 `run headjack pull --replace <slug> to take hosted`. Pulled skills follow hosted: `headjack updates` does not track their
 upstream, so run `headjack pull` again to refresh them. It exits 1 when any skill failed.
 
 ```sh
-headjack pull                     # approved standalone skills; a re-run copies only what changed
+headjack pull                     # approved skills and plugins; a re-run copies only what changed
 headjack pull --replace my-skill  # take the hosted version over a local edit
 ```
 
@@ -212,7 +214,8 @@ The CLI keeps its state in `~/.headjack`, or in `HEADJACK_HOME` when set (an abs
 the vault (local mode), the token file, `state.json` (what is installed where), the local copies of installed skills,
 `harnesses.json`, import plans and trim backups.
 
-An optional `config.json` in that directory holds two lists of strings; unknown keys are ignored:
+An optional `config.json` in that directory holds two lists of strings, plus the `suggest` and `enrich` sections
+described under [Suggestions](#suggestions); unknown keys are ignored:
 
 ```json
 {
@@ -231,16 +234,66 @@ An optional `config.json` in that directory holds two lists of strings; unknown 
 
 ### Suggestions
 
-`headjack suggest "<text>"` searches the vault for skills that fit a request and are not active yet, and prints them
-with the command that installs one (add `--json` for agents, `--explain` to see why each candidate was or was not
-offered). It prints nothing when there is no local vault. `headjack suggest --enable` and `--disable` switch the
-suggestions on and off in `config.json` (`--enable --hosted` searches the instance named by `HEADJACK_URL` or
-`suggest.url` instead of the local vault; `--enable --local` goes back). `--session-id <id>` stops a session from being
-offered the same skill twice.
+The Claude Code plugin can offer vault skills while you work. With suggestions on, each prompt you send is searched
+against the vault, and when a skill that is not active yet fits it well, Claude sees a short `<headjack-suggestions>`
+block with the skill and the command that installs it for the session. Claude is told to offer it and to install
+nothing without your OK. Suggestions are off until you turn them on:
 
-Local mode, the default, sends nothing anywhere. With `--enable --hosted` the cleaned request text (at most 300
-characters, with pasted blocks and code removed) is sent to that server in a POST body, and the server keeps only an HMAC
-of it. The local log, `<state dir>/suggest/log.jsonl`, never holds the text you searched for, in either mode.
+```sh
+headjack suggest --enable            # turn on; keeps the current mode (local unless --hosted was set)
+headjack suggest --enable --hosted   # search the instance named by HEADJACK_URL, else suggest.url
+headjack suggest --enable --local    # back to the local vault
+headjack suggest --disable
+```
+
+The setting lives in `config.json`, so it applies to every Claude Code session of that user. A prompt is not searched
+when it starts with `/`, is a short acknowledgement ("ok", "thanks"), sits under one of `suggest.disabledPaths`, or has
+fewer than 25 useful characters once `<pasted_content>` blocks and fenced code are removed. A session is not offered the
+same skill twice (session state is kept for 24 hours).
+
+`headjack suggest "<text>"` runs the same search by hand, ignoring `enabled` and the `/`, acknowledgement and
+`disabledPaths` rules (the 25-character minimum still applies; `--json` for agents,
+`--explain` for why each candidate was or was not offered, `--session-id <id>` to count it against a session). It prints
+nothing when local mode finds no vault.
+
+Local mode, the default, sends nothing anywhere. The mode follows `suggest.hosted` only, whatever `HEADJACK_MODE` says.
+In hosted mode the first 300 characters of the prompt, after removing `<pasted_content>` blocks and fenced code blocks,
+are sent to that server in a POST body. Inline code, indented code and anything else in those 300 characters are sent as
+typed: prompts get no secret scan. The server ranks with the text (which includes an embeddings call through the AI
+Gateway) and stores no prompt text, at most an HMAC of it. The local log, `<state dir>/suggest/log.jsonl`, never holds
+the text you searched for, in either mode. [`SECURITY.md`](SECURITY.md) lists what suggestions and enrichment send off
+your machine.
+
+The `suggest` section of `config.json` (every key optional):
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | The hook searches each prompt. Set by `--enable` / `--disable`. |
+| `hosted` | `false` | Search the hosted instance instead of the local vault. Set by `--hosted` / `--local`. |
+| `url` | `null` | The hosted instance, used only when `HEADJACK_URL` is unset; `HEADJACK_URL` always wins. |
+| `maxSuggestions` | `2` | Most skills offered per prompt. |
+| `rule.maxRanks` | `2` | Hosted: a skill must rank this high or better in both the text and the meaning search (a skill first in the meaning search alone needs `minSimilarity` + 0.05). |
+| `rule.minSimilarity` | `0.45` | Hosted: the lowest meaning-search similarity offered. |
+| `rule.localMinGap` | `1.11` | Local: only a skill ranked first in one of the searched tables (English, Spanish, glossary) is offered, and its text score must lead that table's next skill by this much (with no runner-up, it needs 2 matched words). |
+| `includeUnreviewed` | `true` | Offer skills not yet approved in `headjack review`; `false` offers approved ones only. |
+| `disabledPaths` | `[]` | Directories (absolute or `~/`) where prompts are never searched. |
+| `retiredPlugins` | `["superpowers@superpowers-marketplace"]` | Plugins (`<plugin>@<marketplace>`) never offered; the built-in entry is always added to what the file lists. |
+| `deadlineMs` | `{ "local": 1000, "hosted": 3000 }` | Time budget per prompt (200–8000 ms); past it the prompt goes on without suggestions. |
+
+Three commands help you tune these settings:
+
+```sh
+headjack suggest --report [--since 7d]       # suggestions taken, ignored, or beaten by a skill you added anyway
+echo "render my remotion video to mp4" | headjack suggest --save --expect remotion-render   # save a test prompt
+headjack suggest --calibrate [--mode local|hosted]   # precision and recall per language against eval.json
+```
+
+`--save` appends a `{ q, slug, lang, at }` row to `<state dir>/suggest/cases.jsonl` (`--expect none` for a prompt that
+should get nothing; `lang` is guessed unless `--lang` is given; without stdin it opens `$VISUAL` or `$EDITOR`, never the
+command line, so the prompt stays out of shell history). It is the only file that keeps prompt text. `--calibrate` reads
+`<state dir>/suggest/eval.json`, a JSON array of `{ q, slug, lang }` rows you build from those cases: at least 20 rows
+per language, 8 of them with `slug: null`. It prints precision, recall and latency per language and cross-validated
+thresholds as guidance, and never changes `config.json`.
 
 #### Spanish enrichment (opt-in)
 

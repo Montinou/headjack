@@ -10,9 +10,9 @@ the hosted server, the web app, the `headjack` CLI, the local SQLite vault and t
 - For anything larger than a small fix, open an issue first so the direction can be agreed.
 - Keep a change focused on one thing, and add or update a test with it.
 - Previews are not deployed for pull requests from forks; the GitHub CI run is the check.
-- A pull request that changes `cli/headjack`, any file in the import closure of `cli/headjack.mjs`, `skill-finder/` or
-  `.claude-plugin/` must raise `version` in `.claude-plugin/plugin.json` above the one on `main` (semver), because
-  installed plugins update by version. Other changes leave `version` alone.
+- A pull request that changes `cli/headjack`, any file in the import closure of `cli/headjack.mjs`, `skill-finder/`,
+  `plugin-hooks/` or `.claude-plugin/` must raise `version` in `.claude-plugin/plugin.json` above the one on `main`
+  (semver), because installed plugins update by version. Other changes leave `version` alone.
 
 ## Before you open a pull request
 

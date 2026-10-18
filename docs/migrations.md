@@ -1,7 +1,7 @@
 # Migrations
 
 Schema changes live in `drizzle/` (generated with `npm run db:generate` from `db/schema.ts`, plus the hand-written
-`0001_app_foundation` and `0004_rls`) and are applied by the Vercel build, not by hand.
+`0001_app_foundation`, `0004_rls` and `0009_rename_app_role`) and are applied by the Vercel build, not by hand.
 
 ## In the Vercel build
 
@@ -57,6 +57,8 @@ not roll the schema back. So every migration must work with the code that is liv
   same release that stops reading it. A rename is an add, a backfill, a switch of readers, and a later drop. The one
   accepted exception is renaming the app role, migration `0009_rename_app_role`: see the next section for its window and
   rollback.
+- `0010_enrichment_version` follows this rule: a nullable column (`skills.enrichment_v`) and one data `UPDATE`, with no
+  drop or rename. The previous deployment ignores the column.
 - Before the first automated production migration, confirm the Neon project's instant-restore window, or take a
   backup branch once.
 

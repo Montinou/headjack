@@ -219,8 +219,10 @@ accept it and record nothing.
 
 For a client to search, read, install and list, a server needs `GET /api/search`, `GET /api/skills`,
 `GET /api/skills/{slug}` and `GET /api/skills/{slug}/download` with its `x-skill-sha256` header, bearer authentication, and
-the error body. `headjack mcp` needs exactly those four routes. The other routes serve `headjack review`, `headjack import`
-and `headjack updates`; a server without them makes those commands fail with the server's status, and nothing else.
+the error body. `headjack mcp` needs exactly those four routes. Hosted skill suggestions (`headjack suggest` and the plugin
+hooks with `suggest.hosted` on) also need `POST /api/search`; the client treats a `404` or `405` from it as
+`skipped:no-post` and suggests nothing. The other routes serve `headjack review`, `headjack import` and `headjack updates`; a
+server without them makes those commands fail with the server's status, and nothing else.
 
 ## Optional: OAuth login
 
