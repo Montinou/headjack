@@ -251,7 +251,8 @@ when it starts with `/`, is a short acknowledgement ("ok", "thanks"), sits under
 fewer than 25 useful characters once `<pasted_content>` blocks and fenced code are removed. A session is not offered the
 same skill twice (session state is kept for 24 hours).
 
-`headjack suggest "<text>"` runs the same search by hand, ignoring `enabled` and the skip rules (`--json` for agents,
+`headjack suggest "<text>"` runs the same search by hand, ignoring `enabled` and the `/`, acknowledgement and
+`disabledPaths` rules (the 25-character minimum still applies; `--json` for agents,
 `--explain` for why each candidate was or was not offered, `--session-id <id>` to count it against a session). It prints
 nothing when local mode finds no vault.
 
