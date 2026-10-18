@@ -91,6 +91,37 @@ To get there:
 `HEADJACK_UPDATE_TTL_HOURS` sets how long an upstream check stays fresh (6 hours by default; 0 checks every time). The
 `vault.db` file is mode 600 in a directory of mode 700.
 
+## Install from npm
+
+The CLI and the local MCP server are also published to npm as `@triqual/headjack`, with no dependencies. It needs Node
+22.16 or later. A global install is the way to use it as an MCP server, because it puts `headjack` on your `PATH`:
+
+```sh
+npm install -g @triqual/headjack
+headjack --help
+```
+
+Then point any MCP client at it over stdio:
+
+```json
+{
+  "mcpServers": {
+    "headjack": { "command": "headjack", "args": ["mcp"] }
+  }
+}
+```
+
+To try it without installing anything, run it through `npx`:
+
+```sh
+npx -y @triqual/headjack mcp
+```
+
+The commands the MCP tools hand back (the install command, the login hint) start with `headjack`, so running them needs
+the global install. The npm package is the CLI, the MCP server and the `skill-finder` skill; the Claude Code plugin's
+prompt hooks still come from the plugin (see [Quickstart: local](https://github.com/Montinou/headjack#quickstart-local)
+and [`docs/mcp.md`](https://github.com/Montinou/headjack/blob/main/docs/mcp.md)).
+
 ## The web app
 
 The hosted instance shows the same catalog in a web app. These screenshots come from the fixture server with made-up

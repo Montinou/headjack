@@ -92,3 +92,10 @@ test('every by-path construction is listed', async () => {
   }
   assert.ok(found.includes('.claude-plugin/plugin.json') && found.includes('skill-finder'), 'the scan sees the known constructions');
 });
+
+test('the README documents the npm install', async () => {
+  const readme = await readFile(path.join(ROOT, 'README.md'), 'utf8');
+  assert.ok(readme.includes('npm install -g @triqual/headjack'), 'the global install');
+  assert.match(readme, /"command":\s*"headjack",\s*"args":\s*\["mcp"\]/, 'the MCP client config');
+  assert.ok(readme.includes('npx -y @triqual/headjack'), 'the npx trial');
+});
