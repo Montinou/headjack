@@ -184,8 +184,9 @@ test('prompt: the deadline counts from t0, so time spent before runHook (process
   assert.equal(signal.aborted, true);
   const runs = (await readEvents(box.dir)).filter((e) => e.type === 'run');
   assert.deepEqual(runs.map((r) => r.outcome), ['timeout']);
-  // latency_ms counts from the same instant, so it is not shorter than the budget.
-  assert.ok(runs[0].latency_ms >= 400 && runs[0].latency_ms < 550, `latency_ms ${runs[0].latency_ms}`);
+  // latency_ms counts from the same instant, so it is about the budget, not the ~100 ms since runHook. A Node timer can
+  // fire up to ~1 ms early on the performance.now() clock (libuv's loop clock is cached and whole-millisecond), hence 395.
+  assert.ok(runs[0].latency_ms >= 395 && runs[0].latency_ms < 550, `latency_ms ${runs[0].latency_ms}`);
 });
 
 test('prompt: a result that arrives after the deadline is not printed or remembered', async () => {
