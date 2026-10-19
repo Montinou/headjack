@@ -4,8 +4,9 @@
 //   node vault-proof.mjs scratch <dir> [--copy-vault] <skill-dir>…
 //     Builds a throwaway sandbox in <dir>: a temp HOME, a local vault, a `headjack` wrapper that appends every call to
 //     <dir>/commands.log, and <dir>/env.sh to source before each command. --copy-vault first copies the user's local
-//     vault ($HEADJACK_HOME or ~/.headjack, read-only) so the skill competes with the real catalog. Each <skill-dir> is
-//     then published with `headjack review` (answers: not work content, approve). Nothing outside <dir> changes.
+//     vault ($HEADJACK_HOME or ~/.headjack, read-only) so the skill competes with the real catalog, plus its suggest.rule
+//     so suggest decides with the user's thresholds. Each <skill-dir> is then published with `headjack review` (answers:
+//     not work content, approve). Nothing outside <dir> changes.
 //
 //   node vault-proof.mjs check <dir> <slug> <requests-file>
 //     One request per line: "+ <request>" must find <slug> first in `headjack search` and get it suggested by
@@ -60,6 +61,16 @@ async function copyVault(dest) {
   }
 }
 
+// Copies only suggest.rule (the user's tuned suggestion thresholds) from config.json, so suggest decides as it does
+// for them. Nothing else in that file (tokens, server URL) leaves it.
+async function copyRule(sourceDir, dest) {
+  const config = await readFile(path.join(sourceDir, 'config.json'), 'utf8').then(JSON.parse, () => null);
+  const rule = config?.suggest?.rule;
+  if (!rule || typeof rule !== 'object') return null;
+  await writeFile(dest, `${JSON.stringify({ suggest: { rule } }, null, 2)}\n`);
+  return rule;
+}
+
 async function scratch(argv) {
   const copy = argv.includes('--copy-vault');
   const [dir, ...skills] = argv.filter((a) => a !== '--copy-vault');
@@ -70,6 +81,8 @@ async function scratch(argv) {
   if (copy) {
     const { source, n } = await copyVault(path.join(box, 'state', 'vault.db'));
     console.log(`copied ${source} (${n} skills)`);
+    const rule = await copyRule(path.dirname(source), path.join(box, 'state', 'config.json'));
+    if (rule) console.log(`copied suggest.rule: ${JSON.stringify(rule)}`);
   }
   const log = path.join(box, 'commands.log');
   await writeFile(log, '');

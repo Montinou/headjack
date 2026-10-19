@@ -377,9 +377,12 @@ async function trimRun(opts, ctx) {
   }
   // Headjack's own plugin always stays: disabling it would take away the CLI's MCP server and its skills.
   const installedNow = pluginsInScope ? await readJson(path.join(ctx.home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: {} }) : { plugins: {} };
+  let headjackPluginOn = false;
   for (const [key, installs] of Object.entries(installedNow?.plugins ?? {})) {
     const list = Array.isArray(installs) ? installs : [installs];
-    if (list.some((i) => i?.installPath) && (await Promise.all(list.filter((i) => i?.installPath).map((i) => isHeadjackPlugin(i.installPath)))).some(Boolean)) keep.push(key);
+    if (!list.some((i) => i?.installPath) || !(await Promise.all(list.filter((i) => i?.installPath).map((i) => isHeadjackPlugin(i.installPath)))).some(Boolean)) continue;
+    keep.push(key);
+    if (settingsData.enabledPlugins?.[key] === true) headjackPluginOn = true;
   }
   const toDisable = pluginsInScope && plugins === 'trimmed'
     ? Object.entries(settingsData.enabledPlugins ?? {}).filter(([key, on]) => on && !keep.includes(key)).map(([key]) => key) : [];
@@ -389,6 +392,8 @@ async function trimRun(opts, ctx) {
     // Like the removals, skill-finder never goes through a symlinked harness dir, and never into an excluded root.
     const { dir, real, symlinked } = await resolveHarnessDir(h, ctx.home);
     if (symlinked || excludedRootOf(real, roots) !== null) continue;
+    // The enabled plugin already gives Claude Code headjack:skill-finder; a second copy would list it twice.
+    if (h === 'claude' && headjackPluginOn) continue;
     const p = path.join(dir, 'skill-finder');
     if (!(await lexists(p))) finderTargets.push(p);
   }
