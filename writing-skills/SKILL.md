@@ -55,7 +55,7 @@ Prove a new or rewritten skill with agents and the vault, in this order.
    user writes Spanish). `-` lines: 3 near misses that another skill should win. Write each as a full request:
    suggestions skip anything under 25 characters, and `check` fails a skipped line.
 3. **A scratch vault with the real catalog:** `vault-proof scratch "$(mktemp -d)/box" --copy-vault <skill-dir>`.
-   It copies, read-only, the vault `HEADJACK_HOME` points at (default `~/.headjack`). Pass: `<slug>: approved` and no
+   It copies, read-only, the vault `HEADJACK_HOME` points at (default `~/.headjack`) and its `suggest.rule`. Pass: `<slug>: approved` and no
    flag you cannot justify. Only if it reports no local vault (a hosted-only machine), run it without `--copy-vault`
    and report that competition was not tested.
 4. **Search and suggest:** `vault-proof check <box> <slug> <requests-file>`. Pass: every line.

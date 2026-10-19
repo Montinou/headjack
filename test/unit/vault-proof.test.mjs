@@ -59,6 +59,22 @@ test('scratch --copy-vault copies the local vault read-only, so the skill compet
   assert.deepEqual(await readFile(path.join(real, 'vault.db')), before, 'the real vault is untouched');
 });
 
+test('scratch --copy-vault copies the suggestion rule from config.json and nothing else from it', async (t) => {
+  const work = await tempDir('vp-');
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const real = await buildSkillFinderVault(path.join(work, 'real'));
+  await writeFile(path.join(real, 'config.json'), JSON.stringify({ token: 'secret-token', url: 'https://example.test', suggest: { enabled: true, rule: { maxRanks: 3 } } }));
+  const skill = await makeDir({ 'srt-subtitles/SKILL.md': SKILL }, path.join(work, 'src'));
+  const box = path.join(work, 'box');
+  const r = await proof(['scratch', box, '--copy-vault', path.join(skill, 'srt-subtitles')], { HEADJACK_HOME: real });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /suggest\.rule: \{"maxRanks":3\}/);
+  const copied = JSON.parse(await readFile(path.join(box, 'state', 'config.json'), 'utf8'));
+  assert.deepEqual(copied.suggest?.rule, { maxRanks: 3 });
+  assert.equal(copied.token, undefined, 'no credentials leave the real config');
+  assert.equal(copied.url, undefined);
+});
+
 test('check passes when + requests find the skill first and suggest it, and - requests do not; fails naming the line', async (t) => {
   const work = await tempDir('vp-');
   t.after(() => rm(work, { recursive: true, force: true }));

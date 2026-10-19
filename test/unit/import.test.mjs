@@ -1078,3 +1078,21 @@ test('trim keeps headjack itself enabled even when it is not in the core', async
   assert.equal(on['headjack@acme-market'], true);
   assert.equal(on['noncore-plugin@example'], false, 'other non-core plugins are still trimmed');
 });
+
+test('trim does not link skill-finder into Claude Code when the headjack plugin is enabled there', async () => {
+  const { home, ctx } = await fixtureHome();
+  await withHeadjackPlugin(home);
+  await planImport(ctx);
+  const res = await trim({}, ctx);
+  assert.ok(!(await exists(path.join(home, '.claude/skills/skill-finder'))), 'the plugin already gives Claude Code headjack:skill-finder');
+  assert.ok(!res.finder.includes(path.join(home, '.claude/skills/skill-finder')));
+  assert.ok((await lstat(path.join(home, '.codex/skills/skill-finder'))).isSymbolicLink(), 'other harnesses still get it');
+});
+
+test('trim still links skill-finder into Claude Code when the headjack plugin is installed but disabled', async () => {
+  const { home, ctx } = await fixtureHome();
+  await withHeadjackPlugin(home, { enabled: false });
+  await planImport(ctx);
+  await trim({}, ctx);
+  assert.ok((await lstat(path.join(home, '.claude/skills/skill-finder'))).isSymbolicLink());
+});

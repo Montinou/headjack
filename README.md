@@ -113,6 +113,9 @@ Then point any MCP client at it over stdio:
 }
 ```
 
+If the Headjack plugin is installed in Claude Code, skip this entry there: the plugin already runs the same MCP server,
+and a second one shows every tool twice. Use the entry for other clients (Codex, Cursor and the rest).
+
 To try it without installing anything, run it through `npx`:
 
 ```sh
@@ -236,7 +239,9 @@ headjack restore ~/.headjack/backup-<date>   # undo a trim
 ```
 
 A trim removes a local copy only when it is the imported one or byte-identical to it, never through a symlinked harness
-directory, and touches Claude Code plugins only when `claude` is among the trimmed harnesses.
+directory, and touches Claude Code plugins only when `claude` is among the trimmed harnesses. When the Headjack plugin
+is enabled in Claude Code, a trim installs no separate skill-finder there: the plugin's `headjack:skill-finder` is
+already loaded.
 
 The surface that other tools may rely on (JSON shapes, exit codes, environment inputs) is pinned in
 [`docs/capability-contract.md`](docs/capability-contract.md).
