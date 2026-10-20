@@ -16,7 +16,7 @@ test('SUGGEST_DEFAULTS is the section 11 object', () => {
     suggest: {
       enabled: false, hosted: false, url: null, maxSuggestions: 2,
       deadlineMs: { local: 1000, hosted: 3000 },
-      rule: { maxRanks: null, minSimilarity: null, localMinGap: null },
+      rule: { maxRanks: null, minSimilarity: null, localMinGap: null, localMinGapEs: null },
       includeUnreviewed: true, retiredPlugins: [], disabledPaths: [],
     },
     enrich: { enabled: false, model: 'openai/gpt-5-mini' },
@@ -64,6 +64,7 @@ test('a wrong type names the key in a UserError', async () => {
     [{ suggest: { rule: { maxRanks: 'a' } } }, /suggest\.rule\.maxRanks/],
     [{ suggest: { rule: { minSimilarity: {} } } }, /suggest\.rule\.minSimilarity/],
     [{ suggest: { rule: { localMinGap: '1' } } }, /suggest\.rule\.localMinGap/],
+    [{ suggest: { rule: { localMinGapEs: '1' } } }, /suggest\.rule\.localMinGapEs/],
     [{ suggest: { includeUnreviewed: null } }, /suggest\.includeUnreviewed/],
     [{ suggest: { retiredPlugins: 'a' } }, /suggest\.retiredPlugins/],
     [{ suggest: { disabledPaths: [1] } }, /suggest\.disabledPaths/],
@@ -87,7 +88,7 @@ test('rule values stay null when null, and numbers pass through', async () => {
   const dir = await tempDir();
   await put(dir, { suggest: { rule: { localMinGap: null, maxRanks: 3 } } });
   const { rule } = (await loadSuggestConfig(dir)).suggest;
-  assert.deepEqual(rule, { maxRanks: 3, minSimilarity: null, localMinGap: null });
+  assert.deepEqual(rule, { maxRanks: 3, minSimilarity: null, localMinGap: null, localMinGapEs: null });
 });
 
 test('url accepts null and absolute http(s) URLs', async () => {

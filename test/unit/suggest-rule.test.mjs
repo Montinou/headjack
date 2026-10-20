@@ -18,6 +18,7 @@ test('DEFAULT_RULE carries the spec values and a positive derived local gap', ()
   assert.equal(DEFAULT_RULE.maxRanks, 2);
   assert.equal(DEFAULT_RULE.minSimilarity, 0.45);
   assert.ok(Number.isFinite(DEFAULT_RULE.localMinGap) && DEFAULT_RULE.localMinGap > 0);
+  assert.ok(Number.isFinite(DEFAULT_RULE.localMinGapEs) && DEFAULT_RULE.localMinGapEs > 0);
   assert.ok(Object.isFrozen(DEFAULT_RULE));
 });
 
@@ -95,18 +96,33 @@ test('local: a null localMinGap in the rule means the default, never no constrai
   assert.equal(passes(local(1, DEFAULT_RULE.localMinGap), 'local', { localMinGap: null }).pass, true);
 });
 
+test('local: a row won in the Spanish table is held to localMinGapEs, every other table to localMinGap', () => {
+  const es = (gap) => ({ table_rank: 1, bm25_gap: gap, fts_table: 'es' });
+  const en = (gap, fts_table = 'en') => ({ table_rank: 1, bm25_gap: gap, fts_table });
+  const rule = { localMinGap: 5, localMinGapEs: 2 };
+  assert.equal(passes(es(2), 'local', rule).pass, true);
+  assert.deepEqual(passes(es(1.99), 'local', rule), { pass: false, reason: 'gap' });
+  assert.equal(passes(en(2), 'local', rule).pass, false);
+  assert.equal(passes(en(5), 'local', rule).pass, true);
+  assert.equal(passes(en(2, 'en-gloss'), 'local', rule).pass, false);
+  assert.equal(passes(en(5, 'en-gloss'), 'local', rule).pass, true);
+  assert.equal(passes(es(DEFAULT_RULE.localMinGapEs), 'local', { localMinGapEs: null }).pass, true);
+  assert.equal(passes(es(DEFAULT_RULE.localMinGapEs - 0.01), 'local').pass, false);
+});
+
 test('an unknown mode throws', () => {
   assert.throws(() => passes(local(1, 5), 'cloud'), /mode/);
 });
 
 test('resolveRule replaces null and absent values with the defaults, never zero', () => {
   assert.deepEqual(resolveRule({ localMinGap: null }), DEFAULT_RULE);
-  assert.deepEqual(resolveRule({ maxRanks: null, minSimilarity: null, localMinGap: null }), DEFAULT_RULE);
+  assert.deepEqual(resolveRule({ maxRanks: null, minSimilarity: null, localMinGap: null, localMinGapEs: null }), DEFAULT_RULE);
   assert.deepEqual(resolveRule(undefined), DEFAULT_RULE);
   assert.deepEqual(resolveRule(null), DEFAULT_RULE);
   assert.deepEqual(resolveRule({}), DEFAULT_RULE);
   assert.notEqual(resolveRule({ localMinGap: null }).localMinGap, 0);
-  assert.deepEqual(resolveRule({ maxRanks: 3, localMinGap: 1 }), { maxRanks: 3, minSimilarity: 0.45, localMinGap: 1 });
+  assert.deepEqual(resolveRule({ maxRanks: 3, localMinGap: 1 }), { maxRanks: 3, minSimilarity: 0.45, localMinGap: 1, localMinGapEs: DEFAULT_RULE.localMinGapEs });
+  assert.equal(resolveRule({ localMinGapEs: 3 }).localMinGapEs, 3);
 });
 
 const CLI = fileURLToPath(new URL('../../cli/headjack.mjs', import.meta.url));
@@ -176,6 +192,8 @@ test('synthetic queries are two distinct words and deterministic', () => {
   }
 });
 
+// The default comes from real prompts now (lib/suggest-rule.mjs); the synthetic derivation stays as a floor: whatever
+// the calibration says, the default must never let more than one random two-word query in ten through.
 localTest('at most one in ten random two-word queries passes the local rule at DEFAULT_RULE.localMinGap', async () => {
   const { DatabaseSync } = await runtimeCheck();
   const dir = await tempDir('sv-cal-');
@@ -186,7 +204,6 @@ localTest('at most one in ten random two-word queries passes the local rule at D
     const rows = await rankOneRows(createSqliteRepo(opened.db), syntheticQueries({ count: QUERIES }));
     const fraction = passFraction(rows, DEFAULT_RULE.localMinGap);
     assert.ok(fraction <= MAX_PASS_FRACTION, `pass fraction ${fraction}`);
-    assert.ok(fraction > 0, 'the default is not so strict that nothing passes');
   } finally {
     opened.db.close();
   }

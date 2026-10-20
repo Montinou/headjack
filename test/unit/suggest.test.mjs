@@ -17,7 +17,7 @@ const ctx = { cwd: '/work/app', home: '/home/u' };
 // A local candidate that passes the rule: table rank 1 with a clear gap.
 const local = (slug, extra = {}) => ({
   slug, name: slug, description: `desc of ${slug}`, kind: 'skill', plugin_slug: null, review: 'approved',
-  fts_table: 'en', table_rank: 1, bm25_gap: 3, matched_terms: 3, ...extra,
+  fts_table: 'en', table_rank: 1, bm25_gap: 10, matched_terms: 3, ...extra,
 });
 const hosted = (slug, extra = {}) => ({
   slug, name: slug, description: `desc of ${slug}`, kind: 'skill', plugin_slug: null, review: 'approved',
@@ -234,7 +234,7 @@ test('result shape: outcome, mode, variant, suggestions, candidates, latency, la
   assert.deepEqual(r.suggestions.map((s) => s.slug), ['flags']);
   assert.deepEqual(r.suggestions[0], { slug: 'flags', name: 'flags', description: 'desc of flags', kind: 'skill', plugin_slug: null, review: 'approved' });
   assert.deepEqual(r.candidates[0], {
-    slug: 'flags', fts_rank: null, vector_rank: null, similarity: null, fts_table: 'en', table_rank: 1, bm25_gap: 3, matched_terms: 3,
+    slug: 'flags', fts_rank: null, vector_rank: null, similarity: null, fts_table: 'en', table_rank: 1, bm25_gap: 10, matched_terms: 3,
     active: false, review: 'approved', passed: true, rejected_by: null,
   });
 });

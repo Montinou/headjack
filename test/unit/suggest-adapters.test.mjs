@@ -221,6 +221,25 @@ localTest('localSearch returns the signals of the current vault, variant local',
   assert.deepEqual(await localSearch({ dir, query: 'a ! ?', migrate: false }), { candidates: [], variant: 'local' });
 });
 
+localTest('localSearch ranks the Spanish example requests first for a Spanish query, and searches only the English text otherwise', async () => {
+  const { DatabaseSync } = await runtimeCheck();
+  const dir = await tempDir('sv-local-adapter-');
+  const db = openVault({ dir, DatabaseSync });
+  const repo = createSqliteRepo(db);
+  // 'video-maker' wins the English table for "video render"; 'clip-render' wins the Spanish one.
+  await repo.publish(skill('video-maker', 'Make a video', 'video video render video'));
+  const clip = await repo.publish(skill('clip-render', 'Clip tools', 'Trims clips.'));
+  await repo.setSpanish(clip.skillId, clip.versionId, 'renderizar el video final', 1);
+  db.close();
+  const es = await localSearch({ dir, query: 'necesito renderizar el video final', migrate: false });
+  assert.deepEqual(es.candidates.slice(0, 2).map((c) => [c.slug, c.fts_table, c.table_rank]), [['clip-render', 'es', 1], ['video-maker', 'en', 1]]);
+  const en = await localSearch({ dir, query: 'render the video please', migrate: false });
+  assert.equal(en.candidates[0].slug, 'video-maker');
+  assert.equal(en.candidates[0].fts_table, 'en');
+  // An English prompt never searches the Spanish example requests: words that only they hold find nothing.
+  assert.deepEqual((await localSearch({ dir, query: 'renderizar final today', migrate: false })).candidates, []);
+});
+
 localTest('an old schema is skipped:schema without migrate, migrated and searched with migrate', async () => {
   const dir = await seededVault();
   MIGRATIONS.push('create table adapter_future_probe (x integer)');
