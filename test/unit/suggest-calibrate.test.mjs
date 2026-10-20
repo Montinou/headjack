@@ -13,6 +13,7 @@ import { runtimeCheck } from '../../lib/local/runtime.mjs';
 import { MIGRATIONS, openVault } from '../../lib/local/schema.mjs';
 import { createSqliteRepo } from '../../lib/local/sqlite-repo.mjs';
 import { loadSuggestConfig } from '../../lib/suggest-config.mjs';
+import { DEFAULT_RULE } from '../../lib/suggest-rule.mjs';
 import { suggestDeps } from '../../cli/suggest-deps.mjs';
 import {
   loadEvalSet, checkMinimums, metrics, assignFolds, buildGrid, suggestedSlugs, crossValidate, calibrate, formatCalibration,
@@ -145,9 +146,23 @@ test('buildGrid: local varies localMinGap at the observed rank-1 gap percentiles
   assert.equal(hg.length, 4 * 6);
   assert.deepEqual([...new Set(hg.map((p) => p.maxRanks))], [1, 2, 3, 4]);
   assert.deepEqual([...new Set(hg.map((p) => p.minSimilarity))], [0.35, 0.4, 0.45, 0.5, 0.55, 0.6]);
-  assert.ok(hg.every((p) => p.localMinGap === 1.11));
+  assert.ok(hg.every((p) => p.localMinGap === DEFAULT_RULE.localMinGap));
   // No rank-1 gap observed: the default gap is the only point.
-  assert.deepEqual(buildGrid([{ candidates: [] }], 'local').map((p) => p.localMinGap), [1.11]);
+  assert.deepEqual(buildGrid([{ candidates: [] }], 'local').map((p) => p.localMinGap), [DEFAULT_RULE.localMinGap]);
+});
+
+test('buildGrid: local crosses the English-table gaps with the Spanish-table gaps, each from its own rank-1 rows', () => {
+  const en = Array.from({ length: 20 }, (_, i) => local(`e${i}`, i + 1));
+  const es = Array.from({ length: 20 }, (_, i) => local(`s${i}`, (i + 1) / 10, { fts_table: 'es' }));
+  const gloss = [local('g', 1000, { fts_table: 'en-gloss' })];
+  const grid = buildGrid([{ candidates: [...en, ...es, ...gloss] }], 'local');
+  assert.deepEqual([...new Set(grid.map((p) => p.localMinGapEs))], [1, 1.5, 1.8, 1.9]);
+  // en-gloss shares the English scale, so its gaps join the English dimension.
+  assert.equal(new Set(grid.map((p) => p.localMinGap)).size, 4);
+  assert.equal(grid.length, 16);
+  // No Spanish rank-1 gap observed: that dimension is the default alone.
+  assert.deepEqual([...new Set(buildGrid([{ candidates: en }], 'local').map((p) => p.localMinGapEs))], [DEFAULT_RULE.localMinGapEs]);
+  assert.ok(buildGrid([{ candidates: en }], 'hosted').every((p) => p.localMinGapEs === DEFAULT_RULE.localMinGapEs));
 });
 
 test('buildGrid cuts local gaps down to 2 decimals, without float drift (1.15 stays 1.15)', () => {
@@ -264,8 +279,8 @@ test('calibrate runs each row once with entry eval, never writes the log or the 
       calls.push(q);
       const row = key.get(q);
       // Perfect for even-numbered skill rows, and a confident false positive on null rows 0-3.
-      if (row.slug === null) return row.i % 4 === 0 ? { candidates: [{ slug: 'junk', name: 'junk', description: 'x', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' } : { candidates: [], variant: 'local' };
-      return { candidates: [{ slug: row.slug, name: row.slug, description: 'x', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' };
+      if (row.slug === null) return row.i % 4 === 0 ? { candidates: [{ slug: 'junk', name: 'junk', description: 'x', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 10, matched_terms: 3 }], variant: 'local' } : { candidates: [], variant: 'local' };
+      return { candidates: [{ slug: row.slug, name: row.slug, description: 'x', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 10, matched_terms: 3 }], variant: 'local' };
     }),
   });
   assert.equal(calls.length, rs.length, 'one search per row');
@@ -285,7 +300,7 @@ test('calibrate keeps a skipped:short row as no suggestion, so it still counts t
   const key = answerKey(rs);
   const report = await calibrate({
     rows: rs, mode: 'local', config: await config(), cwd: '/nowhere', home: '/nowhere',
-    depsFor: depsFor(async (q) => ({ candidates: [{ slug: key.get(q).slug ?? 'none', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' })),
+    depsFor: depsFor(async (q) => ({ candidates: [{ slug: key.get(q).slug ?? 'none', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 10, matched_terms: 3 }], variant: 'local' })),
   });
   assert.equal(report.skipped, 0);
   assert.equal(report.rows.length, rs.length);
@@ -303,7 +318,7 @@ test('calibrate counts a row an adapter skipped and leaves it out of the metrics
     rows: rs, mode: 'local', config: await config(), cwd: '/nowhere', home: '/nowhere',
     depsFor: depsFor(async (q) => (q === dropped.q
       ? { outcome: 'skipped:busy' }
-      : { candidates: [{ slug: key.get(q).slug ?? 'none', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' })),
+      : { candidates: [{ slug: key.get(q).slug ?? 'none', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 10, matched_terms: 3 }], variant: 'local' })),
   });
   assert.equal(report.skipped, 1);
   assert.equal(report.rows.length, rs.length - 1);
@@ -348,7 +363,8 @@ test('every printed percentage carries its raw counts, and the recommendation is
   // The recommendation is a final fit on all rows; the label must not claim it was chosen on training folds only.
   assert.match(text, /recommended thresholds, fit on all rows of each language/);
   assert.doesNotMatch(text, /chosen on training folds only/);
-  assert.match(text, /localMinGap/);
+  assert.match(text, /localMinGap /);
+  assert.match(text, /localMinGapEs /);
   assert.match(text, /p50/);
   assert.match(text, /p95/);
   assert.doesNotMatch(text, /prompt number/, 'the report never prints the prompt text');
@@ -378,7 +394,7 @@ test('the training line says it is pooled over the folds', async () => {
   const key = answerKey(rs);
   const report = await calibrate({
     rows: rs, mode: 'local', config: await config(), cwd: '/nowhere', home: '/nowhere',
-    depsFor: depsFor(async (q) => ({ candidates: key.get(q).slug ? [{ slug: key.get(q).slug, name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }] : [], variant: 'local' })),
+    depsFor: depsFor(async (q) => ({ candidates: key.get(q).slug ? [{ slug: key.get(q).slug, name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 10, matched_terms: 3 }] : [], variant: 'local' })),
   });
   const text = formatCalibration(report);
   assert.match(text, /training \(pooled over 5 folds\)/);
@@ -395,7 +411,7 @@ test('calibrate re-checks the minimums once skipped rows are dropped, naming the
       rows: rs, mode: 'local', config: await config(), cwd: '/nowhere', home: '/nowhere',
       depsFor: depsFor(async (q) => (q === dropped.q
         ? { outcome: 'skipped:busy' }
-        : { candidates: [{ slug: key.get(q).slug ?? 'x', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 5, matched_terms: 3 }], variant: 'local' })),
+        : { candidates: [{ slug: key.get(q).slug ?? 'x', name: 'n', description: 'd', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 10, matched_terms: 3 }], variant: 'local' })),
     }),
     (e) => /1 row skipped/.test(e.message) && /es: need 1 more row/.test(e.message) && !/en: need/.test(e.message),
   );

@@ -314,11 +314,18 @@ The `suggest` section of `config.json` (every key optional):
 | `maxSuggestions` | `2` | Most skills offered per prompt. |
 | `rule.maxRanks` | `2` | Hosted: a skill must rank this high or better in both the text and the meaning search (a skill first in the meaning search alone needs `minSimilarity` + 0.05). |
 | `rule.minSimilarity` | `0.45` | Hosted: the lowest meaning-search similarity offered. |
-| `rule.localMinGap` | `1.11` | Local: only a skill ranked first in one of the searched tables (English, Spanish, glossary) is offered, and its text score must lead that table's next skill by this much (with no runner-up, it needs 2 matched words). |
+| `rule.localMinGap` | `5.5` | Local: only a skill ranked first in one of the searched tables is offered, and its text score must lead that table's next skill by this much (with no runner-up, it needs 2 matched words). This value applies to the English text and the glossary. |
+| `rule.localMinGapEs` | `2.5` | Local: the same lead for a skill ranked first in the Spanish example requests, whose scores run on a smaller scale. |
 | `includeUnreviewed` | `true` | Offer skills not yet approved in `headjack review`; `false` offers approved ones only. |
 | `disabledPaths` | `[]` | Directories (absolute or `~/`) where prompts are never searched. |
 | `retiredPlugins` | `["superpowers@superpowers-marketplace"]` | Plugins (`<plugin>@<marketplace>`) never offered; the built-in entry is always added to what the file lists. |
 | `deadlineMs` | `{ "local": 1000, "hosted": 3000 }` | Time budget per prompt (200–8000 ms); past it the prompt goes on without suggestions. |
+
+Local search leaves out common English and Spanish words ("the", "can you", "de", "dale") before it searches. A
+Spanish prompt searches the Spanish example requests first, then the English text; any other prompt searches the English
+text only. The two `rule.localMinGap*` defaults were measured on a 152-skill vault against 229 labelled prompts in
+English and Spanish ([`docs/suggest-calibration.md`](docs/suggest-calibration.md)). Score gaps depend on the vault, so on
+a much smaller or larger one, run `--calibrate` and set your own.
 
 Three commands help you tune these settings:
 

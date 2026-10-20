@@ -79,6 +79,9 @@ test('check passes when + requests find the skill first and suggest it, and - re
   const work = await tempDir('vp-');
   t.after(() => rm(work, { recursive: true, force: true }));
   const real = await buildSkillFinderVault(path.join(work, 'real'));
+  // A tiny fixture vault: its bm25 gaps are on a much smaller scale than a real one's, so it carries its own rule
+  // (scratch --copy-vault copies suggest.rule).
+  await writeFile(path.join(real, 'config.json'), JSON.stringify({ suggest: { rule: { localMinGap: 1.11, localMinGapEs: 1.11 } } }));
   const skill = await makeDir({ 'srt-subtitles/SKILL.md': SKILL }, path.join(work, 'src'));
   const box = path.join(work, 'box');
   assert.equal((await proof(['scratch', box, '--copy-vault', path.join(skill, 'srt-subtitles')], { HEADJACK_HOME: real })).code, 0);

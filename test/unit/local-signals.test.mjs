@@ -4,6 +4,7 @@ import { tempDir } from '../helpers.mjs';
 import { runtimeCheck } from '../../lib/local/runtime.mjs';
 import { openVault, openVaultReadOnly } from '../../lib/local/schema.mjs';
 import { createSqliteRepo, fuseSignals, searchTerms } from '../../lib/local/sqlite-repo.mjs';
+import { contentTerms } from '../../lib/stopwords.mjs';
 
 let sha = 0;
 function skill(slug, description, body, extra = {}) {
@@ -193,6 +194,37 @@ localTest('fuseSignals keeps the best table_rank per skill and breaks ties en, e
   }
   // Across skills, equal ranks order by table before bm25.
   assert.deepEqual(fuseSignals([[row(6, 'es', 1, -3)], [row(5, 'en', 1, -1)]]).map((r) => r.id), [5, 6]);
+});
+
+localTest('fuseSignals breaks rank ties by the order it is given, the default being en, es, en-gloss', () => {
+  const row = (id, fts_table, table_rank, bm25) => ({ id, fts_table, table_rank, bm25 });
+  const lists = [[row(5, 'en', 1, -1)], [row(6, 'es', 1, -3)]];
+  assert.deepEqual(fuseSignals(lists).map((r) => r.id), [5, 6]);
+  assert.deepEqual(fuseSignals(lists, ['es', 'en', 'en-gloss']).map((r) => r.id), [6, 5]);
+  // The same skill in two tables at the same rank keeps the row of the preferred table.
+  const both = [[row(7, 'en', 1, -1)], [row(7, 'es', 1, -3)]];
+  assert.deepEqual(fuseSignals(both, ['es', 'en', 'en-gloss']).map((r) => r.fts_table), ['es']);
+});
+
+localTest('contentTerms drops English and Spanish function words and chat filler, folding case and accents', () => {
+  assert.deepEqual(contentTerms(['Can', 'you', 'make', 'the', 'deploy', 'cron', 'work']), ['deploy', 'cron', 'work']);
+  assert.deepEqual(contentTerms(['Armá', 'el', 'video', 'de', 'remotion', 'con', 'subtítulos', 'está']), ['Armá', 'video', 'remotion', 'subtítulos']);
+  assert.deepEqual(contentTerms(['si', 'me', 'parece', 'bien']), ['parece']);
+  assert.deepEqual(contentTerms([]), []);
+});
+
+localTest('searchSignals never searches stop words: they neither match nor count as matched terms', async () => {
+  const { db, repo } = await fixture();
+  try {
+    await repo.publish(skill('spanish-guide', 'Una guía de la app', 'el la de con para que una los las del'));
+    assert.deepEqual(await repo.searchSignals('el de la con para que', {}), []);
+    assert.deepEqual(await repo.searchSignals('can you do the thing for me', {}), []);
+    const rows = await repo.searchSignals('can you make the deploy cron for me', {});
+    assert.equal(rows[0].slug, 'deploy-cron');
+    assert.equal(rows[0].matched_terms, 2);
+  } finally {
+    db.close();
+  }
 });
 
 localTest('matched_terms works on the read-only connection the suggestion hook opens, call after call', async () => {
