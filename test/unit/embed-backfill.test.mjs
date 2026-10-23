@@ -264,3 +264,69 @@ localTest('transient write contention preserves vectors and the busy outcome', a
     f.db.close();
   }
 });
+
+// These races use the fixture's independent connection while embedCommand awaits its injected Gateway.
+// Rejecting stale writes must preserve every stored representation, not merely the Spanish column.
+function storedState(db) {
+  return {
+    spanish: db.prepare('select queries_es_text, enrichment_v from skills order by id').all(),
+    chunks: db.prepare('select * from chunks order by id').all(),
+    vectors: db.prepare('select rowid, hex(embedding) embedding, skill_id, version_id from chunk_vecs order by rowid').all(),
+    english: db.prepare('select rowid, * from skill_docs order by rowid').all(),
+    spanishIndex: db.prepare('select rowid, * from skill_docs_es order by rowid').all(),
+  };
+}
+for (const outcome of ['success', 'failure', 'secret']) {
+  for (const changed of ['Spanish', 'enrichment', 'chunks', 'vector', 'body']) {
+    localTest(`backfill ${outcome} preserves concurrent same-version ${changed}`, async () => {
+      const f = await fixture();
+      try {
+        const ids = await add(f, 'concurrent', { current: outcome === 'success' });
+        assert.equal(loadVec(f.db), true);
+        if (changed !== 'body') {
+          await f.repo.replaceChunks({ ...ids, contentChunks: ['Original content'], vecLoaded: true, preserveSpanish: true });
+        }
+        let afterConcurrent;
+        const calls = [];
+        const result = await run(f, { fetchImpl: async (url, options) => {
+          assert.equal(afterConcurrent, undefined, 'only one request is expected before the conflict');
+          if (changed === 'Spanish') {
+            assert.equal(await f.repo.setSpanish(ids.skillId, ids.versionId, 'Spanish updated during request', ENRICHMENT_VERSION), true);
+          } else if (changed === 'enrichment') {
+            const text = f.db.prepare('select queries_es_text from skills').get().queries_es_text;
+            assert.equal(await f.repo.setSpanish(ids.skillId, ids.versionId, text || 'Concurrent enrichment', ENRICHMENT_VERSION + 1), true);
+          } else if (changed === 'chunks') {
+            await f.repo.replaceChunks({ ...ids, contentChunks: ['Concurrent content'], vecLoaded: true, preserveSpanish: true });
+          } else if (changed === 'vector') {
+            const id = f.db.prepare('select id from chunks').get().id;
+            f.db.prepare('insert into chunk_vecs(rowid,embedding,skill_id,version_id) values(?,?,?,?)')
+              .run(BigInt(id), JSON.stringify([1, ...Array(1535).fill(0)]), BigInt(ids.skillId), BigInt(ids.versionId));
+          } else {
+            f.db.prepare('update skill_docs set body=?').run('Concurrent fallback body');
+          }
+          afterConcurrent = storedState(f.db);
+          if (outcome === 'failure') throw new Error('injected completion failure');
+          if (outcome === 'secret') {
+            calls.push(JSON.parse(options.body));
+            return Response.json({ choices: [{ message: { content: JSON.stringify({ queries_es: [`Use github_pat_${'b'.repeat(82)}`, ...queries.slice(0, 2)] }) } }] });
+          }
+          return gateway(calls)(url, options);
+        } });
+        assert.ok(afterConcurrent);
+        assert.deepEqual(storedState(f.db), afterConcurrent, 'a stale backfill must leave the concurrent write intact');
+        assert.equal(result.code, outcome === 'failure' ? 1 : 0);
+        assert.deepEqual(result.logs, [outcome === 'failure'
+          ? 'examined: 1, embedded: 0, skipped: 0, failed: 1'
+          : 'examined: 1, embedded: 0, skipped: 1, failed: 0']);
+        if (outcome === 'secret') assert.equal(calls.length, 1, 'secret output must never be embedded');
+        if (outcome === 'success' && changed === 'Spanish') {
+          const retry = await run(f);
+          assert.equal(retry.code, 0);
+          assert.deepEqual(retry.calls[0].input, ['Original content', 'Spanish updated during request']);
+          assert.equal(f.db.prepare("select text from chunks where kind='query'").get().text, 'Spanish updated during request');
+          assert.deepEqual((await run(f)).logs, ['examined: 1, embedded: 0, skipped: 1, failed: 0']);
+        }
+      } finally { f.db.close(); }
+    });
+  }
+}
