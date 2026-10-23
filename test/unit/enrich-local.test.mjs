@@ -405,6 +405,128 @@ localTest('enrichAfterImport never throws: a UserError is reported with its mess
   } finally { f.close(); }
 });
 
+localTest('enrichAfterImport on a slug at ENRICHMENT_VERSION records no fetch and leaves two query chunks', async () => {
+  const f = await fixture(['alpha']);
+  try {
+    const { skillId, versionId } = f.ids.alpha;
+    await f.repo.setSpanish(skillId, versionId, 'consulta uno consulta dos', ENRICHMENT_VERSION);
+    const insert = f.db.prepare("insert into chunks (skill_id, version_id, text, kind) values (?, ?, ?, 'query')");
+    insert.run(skillId, versionId, 'consulta uno');
+    insert.run(skillId, versionId, 'consulta dos');
+    await fsp.writeFile(path.join(f.dir, 'config.json'), JSON.stringify({ enrich: { enabled: true } }));
+    const fetchImpl = recorder();
+    await enrichAfterImport({
+      repo: f.repo, published: ['alpha'], env: { AI_GATEWAY_API_KEY: KEY }, dir: f.dir, fetchImpl, log: captureLog(),
+    });
+    assert.equal(fetchImpl.calls.length, 0);
+    assert.deepEqual(
+      f.db.prepare("select text from chunks where kind = 'query' order by id").all().map((row) => row.text),
+      ['consulta uno', 'consulta dos'],
+    );
+    assert.equal((await f.repo.getSkill('alpha')).queries_es_text, 'consulta uno consulta dos');
+  } finally { f.close(); }
+});
+
+localTest('enrich with loadVec false and a chunk_vecs name does not throw or change Spanish', async () => {
+  const { DatabaseSync } = await runtimeCheck();
+  const dir = await tempDir('sv-enrich-vec-');
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  const repo = createSqliteRepo(db);
+  const ids = await repo.publish(version('alpha'));
+  db.exec('create table chunk_vecs (id integer)');
+  const prepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    if (/\bfrom\s+chunk_vecs\b/i.test(sql) || /\bjoin\s+chunk_vecs\b/i.test(sql) || /\binto\s+chunk_vecs\b/i.test(sql)) {
+      throw new Error('no such module: vec0');
+    }
+    return prepare(sql);
+  };
+  let saw = null;
+  const loadVec = (database) => {
+    saw = database;
+    database.enableLoadExtension(true);
+    return false;
+  };
+  try {
+    const fetchImpl = recorder();
+    await assert.doesNotReject(enrichCommand({
+      repo, db, slugs: ['alpha'], stale: false, config: ON, env: { AI_GATEWAY_API_KEY: KEY }, dir, fetchImpl, log: captureLog(), loadVec,
+    }));
+    assert.equal((await repo.getSkill('alpha')).queries_es_text, '');
+    assert.equal(fetchImpl.calls.length, 0);
+    assert.equal(saw, db);
+    assert.equal(ids.skillId > 0, true);
+  } finally { db.close(); }
+});
+
+function vectorsFor(input) {
+  return {
+    object: 'list',
+    data: input.map((_, index) => ({
+      object: 'embedding',
+      index,
+      embedding: Array.from({ length: 1536 }, (_, i) => (i === index ? 1 : 0)),
+    })),
+    model: 'openai/text-embedding-3-small',
+    usage: { prompt_tokens: input.length, total_tokens: input.length },
+  };
+}
+
+localTest('enrich with sqlite-vec stores one chunk per query and embeds a content chunk that has no vector', async () => {
+  const { DatabaseSync } = await runtimeCheck();
+  const dir = await tempDir('sv-enrich-embed-');
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  const repo = createSqliteRepo(db);
+  const ids = await repo.publish(version('alpha'));
+  db.prepare("insert into chunks (skill_id, version_id, text, kind) values (?, ?, ?, 'content')").run(ids.skillId, ids.versionId, 'alpha body text');
+  const { loadVec } = await import('../../lib/local/vec.mjs');
+  assert.equal(loadVec(db), true);
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url: String(url), input: body.input });
+    if (String(url).includes('/embeddings')) return Response.json(vectorsFor(body.input));
+    return answer(QUERIES);
+  };
+  try {
+    const result = await enrichLocal({
+      repo, db, slugs: ['alpha'], stale: false, config: ON, env: { AI_GATEWAY_API_KEY: KEY }, dir, fetchImpl, log: captureLog(),
+    });
+    assert.deepEqual(result.enriched, ['alpha']);
+    assert.deepEqual(
+      db.prepare("select text from chunks where kind = 'query' order by id").all().map((row) => row.text),
+      QUERIES,
+    );
+    const embed = calls.filter((call) => String(call.url).includes('/embeddings'));
+    assert.equal(embed.length > 0, true);
+    assert.deepEqual(embed[0].input.slice(0, QUERIES.length), QUERIES);
+    assert.equal(embed.some((call) => call.input.includes('alpha body text')), true);
+    assert.equal((await repo.getSkill('alpha')).queries_es_text, QUERIES.join(' '));
+    assert.equal(db.prepare('select count(*) as n from chunk_vecs').get().n > 0, true);
+  } finally { db.close(); }
+});
+
+localTest('enrich with sqlite-vec writes nothing when the embedding fails', async () => {
+  const { DatabaseSync } = await runtimeCheck();
+  const dir = await tempDir('sv-enrich-embed-fail-');
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  const repo = createSqliteRepo(db);
+  await repo.publish(version('alpha'));
+  const { loadVec } = await import('../../lib/local/vec.mjs');
+  assert.equal(loadVec(db), true);
+  const fetchImpl = async (url) => (
+    String(url).includes('/embeddings') ? new Response('no', { status: 502 }) : answer(QUERIES)
+  );
+  try {
+    const result = await enrichLocal({
+      repo, db, slugs: ['alpha'], stale: false, config: ON, env: { AI_GATEWAY_API_KEY: KEY }, dir, fetchImpl, log: captureLog(),
+    });
+    assert.deepEqual(result.enriched, []);
+    assert.equal((await repo.getSkill('alpha')).queries_es_text, '');
+    assert.equal(db.prepare("select count(*) as n from chunks where kind = 'query'").get().n, 0);
+  } finally { db.close(); }
+});
+
 // ---- the CLI (spawned; no test here can reach the network) ----
 
 async function sandbox(config) {
