@@ -1014,3 +1014,169 @@ localTest('setSpanish clears an empty string without embedding or reading chunk_
     db.close();
   }
 });
+
+// Phase 2 review regressions use only disposable vaults and injected responses.
+async function reviewPublish(repo, db, byte, { key = KEY, fetchImpl = gateway() } = {}) {
+  return publishCurrent({ repo, db, manifest: manifest({ slug: 'kiln', sha256: sha(byte), kind: 'plugin' }),
+    chunks: [`body ${byte}`], key, fetchImpl, queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION });
+}
+const reviewRollback = (repo, byte, extra = {}) => repo.setCurrentVersion({
+  slug: 'kiln', sha256: sha(byte), name: 'Kiln', description: 'Fires clay', chunks: [`body ${byte}`], ...extra,
+});
+
+localTest('F1 loaded rollback deletes vectors orphaned while extension was unavailable', async () => {
+  const { db, repo } = await open();
+  try {
+    await reviewPublish(repo, db, 'a1');
+    assert.equal(vecRows(db).length, 2);
+    const enable = db.enableLoadExtension.bind(db);
+    db.enableLoadExtension = () => { throw new Error('extension loading is not allowed'); };
+    const prepare = db.prepare.bind(db);
+    db.prepare = (sql) => {
+      assert.ok(!/\bchunk_vecs\b/i.test(sql) || /sqlite_master/i.test(sql), 'no vector access while loading fails');
+      return prepare(sql);
+    };
+    await reviewPublish(repo, db, 'a2');
+    db.prepare = prepare;
+    db.enableLoadExtension = enable;
+    assert.equal(vecRows(db).length, 2);
+    await reviewRollback(repo, 'a1', { key: KEY, fetchImpl: gateway({ embedStatus: 502 }) });
+    assert.equal(vecRows(db).length, 0);
+    assert.deepEqual(chunkRows(db).map(r => r.text), ['body a1']);
+  } finally { db.close(); }
+});
+
+localTest('F2 insert-only failure retries content-only with loaded vector cleanup', async () => {
+  const { db, repo } = await open();
+  try {
+    const ids = await reviewPublish(repo, db, 'a3');
+    const prepare = db.prepare.bind(db);
+    let injected = false;
+    db.prepare = (sql) => {
+      if (!injected && /insert into chunk_vecs/i.test(sql)) {
+        injected = true;
+        throw new Error('chunk_vecs insert failed');
+      }
+      return prepare(sql);
+    };
+    await reviewRollback(repo, 'a3', { key: KEY, fetchImpl: gateway() });
+    assert.equal(injected, true);
+    assert.equal(vecRows(db).length, 0);
+    assert.deepEqual(chunkRows(db).map(r => r.text), ['body a3']);
+    assert.equal(skillRow(db, ids.skillId).enrichment_v, null);
+  } finally { db.close(); }
+});
+
+localTest('F3 enrichment refuses interrupted current version without embedding old content', async () => {
+  const { enrichLocal } = await import('../../cli/enrich-local.mjs');
+  const { db, repo, dir } = await open();
+  try {
+    await reviewPublish(repo, db, 'a4', { key: null });
+    await repo.publish({ manifest: manifest({ slug: 'kiln', sha256: sha('a5'), kind: 'plugin' }), chunks: [{ text: 'new body', kind: 'content' }] });
+    const before = chunkRows(db);
+    const fetchImpl = gateway();
+    const result = await enrichLocal({ repo, db, dir, slugs: ['kiln'], config: { enrich: { enabled: true } }, env: { AI_GATEWAY_API_KEY: KEY }, fetchImpl });
+    assert.ok(!fetchImpl.calls.some(c => c.body.input?.includes('body a4')), 'old content must not be embedded');
+    assert.deepEqual(result.enriched, []);
+    assert.deepEqual(chunkRows(db), before);
+    assert.equal(vecRows(db).length, 0);
+  } finally { db.close(); }
+});
+
+for (const invalid of ['version', 'skill', 'query', 'deleted']) {
+  localTest(`F3/F4 final transaction rejects ${invalid} content snapshot before mutation`, async () => {
+    const { db, repo } = await open();
+    try {
+      const ids = await reviewPublish(repo, db, 'a6');
+      const content = chunkRows(db).find(r => r.kind === 'content');
+      let id = content.id;
+      if (invalid === 'version') {
+        const next = await repo.publish({ manifest: manifest({ slug: 'kiln', sha256: sha('a7'), kind: 'plugin' }), chunks: ['new body'] });
+        ids.versionId = next.versionId;
+      } else if (invalid === 'skill') {
+        const other = await publishCurrent({ repo, db, manifest: manifest({ slug: 'other', sha256: sha('a8'), kind: 'plugin' }), chunks: ['other body'], key: null });
+        id = chunkRows(db).find(r => r.skill_id === other.skillId).id;
+      } else if (invalid === 'query') id = chunkRows(db).find(r => r.kind === 'query').id;
+      else db.prepare('delete from chunks where id = ?').run(id);
+      const before = { chunks: chunkRows(db), vectors: vecRows(db), skill: skillRow(db, ids.skillId), es: docEs(db, ids.skillId) };
+      const wrote = await repo.replaceSpanishChunks({ ...ids, queriesEsText: 'nuevo texto', enrichmentV: ENRICHMENT_VERSION,
+        queryChunks: ['nuevo texto'], queryVectors: [vector(3)], contentVectors: [{ id, vector: vector(4) }] });
+      assert.equal(wrote, false);
+      assert.deepEqual({ chunks: chunkRows(db), vectors: vecRows(db), skill: skillRow(db, ids.skillId), es: docEs(db, ids.skillId) }, before);
+    } finally { db.close(); }
+  });
+}
+
+localTest('F4 same-version replacement during enrichment invalidates sampled chunk ids', async () => {
+  const { enrichLocal } = await import('../../cli/enrich-local.mjs');
+  const { db, repo, dir } = await open();
+  try {
+    await reviewPublish(repo, db, 'a9', { key: null });
+    const fetchImpl = gateway({ onEmbed: () => reviewRollback(repo, 'a9') });
+    const result = await enrichLocal({ repo, db, dir, slugs: ['kiln'], config: { enrich: { enabled: true } }, env: { AI_GATEWAY_API_KEY: KEY }, fetchImpl });
+    assert.deepEqual(result.enriched, []);
+    assert.equal(vecRows(db).length, 0);
+    assert.deepEqual(chunkRows(db).map(r => r.text), ['body a9']);
+  } finally { db.close(); }
+});
+
+for (const key of [null, KEY]) {
+  localTest(`F5 empty rollback uses capped name-description content fallback (key=${Boolean(key)})`, async () => {
+    const { db, repo } = await open();
+    try {
+      await reviewPublish(repo, db, 'aa');
+      const description = 'clay '.repeat(250);
+      await reviewRollback(repo, 'aa', { chunks: [], description, key, fetchImpl: gateway(), queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION });
+      const expected = `Kiln: ${description}`.slice(0, 1000);
+      assert.deepEqual(chunkRows(db).filter(r => r.kind === 'content').map(r => r.text), [expected]);
+      assert.equal(docBody(db, chunkRows(db)[0].skill_id), expected);
+      assert.equal(vecRows(db).length, key ? 2 : 0);
+    } finally { db.close(); }
+  });
+}
+
+localTest('F2 genuinely unusable vector cleanup still permits content-only rollback', async () => {
+  const { db, repo } = await open();
+  try {
+    const ids = await reviewPublish(repo, db, 'ab');
+    const prepare = db.prepare.bind(db);
+    db.prepare = (sql) => {
+      if (/delete from chunk_vecs/i.test(sql)) throw new Error('no such module: vec0');
+      return prepare(sql);
+    };
+    await reviewRollback(repo, 'ab', { key: KEY, fetchImpl: gateway() });
+    assert.deepEqual(chunkRows(db).map(r => r.text), ['body ab']);
+    assert.equal(skillRow(db, ids.skillId).enrichment_v, null);
+    assert.equal(vecRows(db).length, 2, 'inaccessible vectors are retained');
+  } finally { db.close(); }
+});
+
+localTest('F3 setSpanish selects only target-version missing content after interruption', async () => {
+  const { db, repo } = await open();
+  try {
+    const first = await reviewPublish(repo, db, 'ac');
+    const content = chunkRows(db).find(r => r.kind === 'content');
+    db.prepare('delete from chunk_vecs where rowid = ?').run(BigInt(content.id));
+    const next = await repo.publish({ manifest: manifest({ slug: 'kiln', sha256: sha('ad'), kind: 'plugin' }), chunks: ['new body'] });
+    const before = { chunks: chunkRows(db), vectors: vecRows(db), skill: skillRow(db, first.skillId) };
+    const fetchImpl = embedFetch();
+    const wrote = await repo.setSpanish(next.skillId, next.versionId, 'nuevo texto', ENRICHMENT_VERSION, { key: KEY, fetchImpl });
+    assert.ok(!fetchImpl.calls.some(c => c.input.includes('body ac')));
+    assert.equal(wrote, false);
+    assert.deepEqual({ chunks: chunkRows(db), vectors: vecRows(db), skill: skillRow(db, first.skillId) }, before);
+  } finally { db.close(); }
+});
+
+localTest('F4 setSpanish refuses content snapshot rebuilt during its content embeddings', async () => {
+  const { db, repo } = await open();
+  try {
+    const ids = await reviewPublish(repo, db, 'ae');
+    const content = chunkRows(db).find(r => r.kind === 'content');
+    db.prepare('delete from chunk_vecs where rowid = ?').run(BigInt(content.id));
+    const fetchImpl = embedFetch(async (_call, count) => { if (count === 2) await reviewRollback(repo, 'ae'); });
+    const wrote = await repo.setSpanish(ids.skillId, ids.versionId, 'nuevo texto', ENRICHMENT_VERSION, { key: KEY, fetchImpl });
+    assert.equal(wrote, false);
+    assert.equal(vecRows(db).length, 0);
+    assert.deepEqual(chunkRows(db).map(r => r.text), ['body ae']);
+  } finally { db.close(); }
+});

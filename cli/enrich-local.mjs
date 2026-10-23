@@ -91,16 +91,16 @@ function hasSecret(strings) {
   return files.length > 0 && findSecrets(files).length > 0;
 }
 
-function contentWithoutVectors(db, skillId) {
+function contentWithoutVectors(db, skillId, versionId) {
   return db.prepare(
     `select c.id, c.text from chunks c
-      where c.skill_id = ? and c.kind = 'content'
+      where c.skill_id = ? and c.version_id = ? and c.kind = 'content'
         and not exists (select 1 from chunk_vecs v where v.rowid = c.id)`,
-  ).all(skillId);
+  ).all(skillId, versionId);
 }
 
-async function embedEnrichment({ db, skillId, queries, key, fetchImpl }) {
-  const missing = contentWithoutVectors(db, skillId);
+async function embedEnrichment({ db, skillId, versionId, queries, key, fetchImpl }) {
+  const missing = contentWithoutVectors(db, skillId, versionId);
   const texts = [...queries, ...missing.map((row) => row.text)];
   if (hasSecret(texts)) return null;
   const { embedTexts } = await import('./embed-local.mjs');
@@ -185,7 +185,7 @@ export async function enrichLocal({
       const queries = await queriesFor({ payload, model: config.enrich.model, key, fetchImpl });
       if (vectors) {
         if (hasSecret(queries)) { skip(t.slug, 'secret-scan flagged query'); continue; }
-        const embedded = await embedEnrichment({ db: database, skillId: t.id, queries, key, fetchImpl });
+        const embedded = await embedEnrichment({ db: database, skillId: t.id, versionId: t.version_id, queries, key, fetchImpl });
         if (!embedded) { skip(t.slug, 'secret-scan flagged query'); continue; }
         const wrote = await repo.replaceSpanishChunks({
           skillId: t.id,

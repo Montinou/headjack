@@ -4,6 +4,7 @@ export { aiGatewayKey } from './enrich-local.mjs';
 
 const EMBEDDINGS_URL = 'https://ai-gateway.vercel.sh/v1/embeddings';
 const DIMS = 1536;
+export const EMBEDDING_TIMEOUT_MS = 30000;
 
 function finiteVector(embedding) {
   if (!Array.isArray(embedding) || embedding.length !== DIMS) throw new Error('embedding length is not 1536');
@@ -35,26 +36,44 @@ export async function embedTexts({
   key,
   model = process.env.EMBED_MODEL || 'openai/text-embedding-3-small',
   fetchImpl = fetch,
+  timeoutMs = EMBEDDING_TIMEOUT_MS,
 }) {
-  let res;
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('embedding request timed out'));
+      controller.abort();
+    }, timeoutMs);
+  });
+  const request = async () => {
+    let res;
+    try {
+      res = await fetchImpl(EMBEDDINGS_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ model, input: texts, dimensions: DIMS }),
+        signal: controller.signal,
+      });
+    } catch {
+      throw new Error('request failed (network error)');
+    }
+    if (!res?.ok) throw new Error(`gateway returned HTTP ${res?.status ?? 'error'}`);
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error('response is not valid JSON');
+    }
+    return vectorsOf(body, Array.isArray(texts) ? texts.length : -1);
+  };
   try {
-    res = await fetchImpl(EMBEDDINGS_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ model, input: texts, dimensions: DIMS }),
-    });
-  } catch {
-    throw new Error('request failed (network error)');
+    // Race the entire operation: injected fetch/json implementations may ignore the abort signal.
+    return await Promise.race([request(), deadline]);
+  } finally {
+    clearTimeout(timer);
   }
-  if (!res?.ok) throw new Error(`gateway returned HTTP ${res?.status ?? 'error'}`);
-  let body;
-  try {
-    body = await res.json();
-  } catch {
-    throw new Error('response is not valid JSON');
-  }
-  return vectorsOf(body, Array.isArray(texts) ? texts.length : -1);
 }
