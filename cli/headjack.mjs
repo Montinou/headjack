@@ -40,6 +40,7 @@ const USAGE = `headjack — personal skill vault
   headjack updates [--grandfathered]
   headjack import --dry-run | import [--interactive]
   headjack import --trim [--keep a,b] [--only-harness <id,…>] [--dry-run]
+  headjack embed
   headjack enrich [--stale] [<slug>…]
   headjack pull [--replace <slug>]…
   headjack verify
@@ -488,6 +489,12 @@ async function main(argv) {
           await enrichAfterImport({ repo: ctx.repo, published: r.published, env: process.env, dir: ctx.dir, log: ctx.log });
         }
         return 0;
+      }
+      case 'embed': {
+        if (!isLocal()) throw new UserError('headjack embed only works on the local vault');
+        if (args.length || Object.keys(o).length) throw new UserError('usage: headjack embed');
+        const { embedCommand } = await import('./embed-backfill.mjs');
+        return local(() => embedCommand({ dir: ctx.dir, env: process.env, log: ctx.log }));
       }
       case 'enrich': {
         if (!isLocal()) throw new UserError('the server enriches hosted skills; headjack enrich only works on the local vault');
