@@ -61,6 +61,7 @@ export async function embedCommand({ dir, env = process.env, fetchImpl = fetch, 
     for (const target of targets) {
       counts.examined++;
       const chunks = db.prepare(`select c.*, exists(select 1 from chunk_vecs v where v.rowid=c.id) embedded from chunks c where c.skill_id=? and c.version_id=? order by c.id`).all(target.id, target.current_version_id);
+      const expectedState = { queriesEs: target.queries_es_text, enrichmentV: target.enrichment_v, body: target.body, chunks };
       const storedContent = chunks.filter(c => c.kind === 'content').map(c => c.text);
       const current = target.enrichment_v !== null && target.enrichment_v >= ENRICHMENT_VERSION;
       const matches = !target.queries_es_text || chunks.filter(c => c.kind === 'query').map(c => c.text).join(' ') === target.queries_es_text;
@@ -77,16 +78,16 @@ export async function embedCommand({ dir, env = process.env, fetchImpl = fetch, 
           skipped = secret(queries);
         }
         if (skipped) {
-          await repo.replaceChunks({ skillId: target.id, versionId: target.current_version_id, contentChunks: content, vecLoaded: true, preserveSpanish: current });
+          await repo.replaceChunks({ skillId: target.id, versionId: target.current_version_id, contentChunks: content, vecLoaded: true, preserveSpanish: current, expectedState });
           counts.skipped++;
           continue;
         }
         const vectors = await embedTexts({ texts: [...content, ...queries], key, fetchImpl, model: env.EMBED_MODEL || 'openai/text-embedding-3-small' });
-        const wrote = await repo.replaceChunks({ skillId: target.id, versionId: target.current_version_id, contentChunks: content, queryChunks: queries, queriesEs: queries.join(' '), vectors, vecLoaded: true });
+        const wrote = await repo.replaceChunks({ skillId: target.id, versionId: target.current_version_id, contentChunks: content, queryChunks: queries, queriesEs: queries.join(' '), vectors, vecLoaded: true, expectedState });
         counts[wrote ? 'embedded' : 'skipped']++;
       } catch (error) {
         if (isBusy(error)) throw error;
-        if (content) await repo.replaceChunks({ skillId: target.id, versionId: target.current_version_id, contentChunks: content, vecLoaded: true, preserveSpanish: current });
+        if (content) await repo.replaceChunks({ skillId: target.id, versionId: target.current_version_id, contentChunks: content, vecLoaded: true, preserveSpanish: current, expectedState });
         counts.failed++;
       }
     }
