@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { file, tempDir } from '../helpers.mjs';
 import { localSupported, localTest } from '../local-helpers.mjs';
+import { pull } from '../../cli/pull.mjs';
 import { createLocalApi } from '../../lib/local/api.mjs';
 import { runtimeCheck } from '../../lib/local/runtime.mjs';
 import { openVault } from '../../lib/local/schema.mjs';
@@ -625,6 +626,390 @@ localTest('a NUL before a secret in an embeddings input stores content chunks an
     assert.equal(hostedFetch.calls.some((call) => call.url.includes('/embeddings')), false);
     assert.deepEqual(chunkRows(db).filter((row) => row.kind === 'content').map((row) => row.text), ['visible heading']);
     assert.equal(vecRows(db).length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+function pluginHosted(detail) {
+  return {
+    async list() {
+      return {
+        skills: [{
+          slug: detail.slug, name: detail.name, description: detail.description, kind: 'plugin', plugin_slug: null,
+          tags: detail.tags, has_approved_version: true,
+        }],
+        total: 1,
+      };
+    },
+    async getSkill() { return detail; },
+    async download() { throw new Error('plugin has no tarball'); },
+  };
+}
+
+function pluginDetail({ sha256, description, queriesEs, enrichmentV }) {
+  return {
+    slug: 'kiln', name: 'Kiln', description, kind: 'plugin', plugin_slug: null, tags: ['kiln'],
+    sha256, source_path: null, commit_sha: 'c'.repeat(40), review_notes: 'reviewed: fine', scan_flags: [],
+    queries_es_text: queriesEs, enrichment_v: enrichmentV,
+  };
+}
+
+localTest('pull after a no-key publish stores the hosted Spanish string through setSpanish', async () => {
+  const dir = await tempDir('sv-pull-es-');
+  const local = await createLocalApi({ dir, env: {} });
+  const seen = [];
+  const publish = local.repo.publish;
+  local.repo.publish = async (args) => {
+    seen.push({ queriesEs: args.queriesEs ?? null, enrichmentV: args.enrichmentV ?? null });
+    return publish(args);
+  };
+  const spanish = [];
+  const setSpanish = local.repo.setSpanish.bind(local.repo);
+  local.repo.setSpanish = async (...args) => {
+    spanish.push({
+      text: args[2],
+      version: args[3],
+      before: (await local.repo.getSkill('kiln'))?.queries_es_text ?? null,
+    });
+    return setSpanish(...args);
+  };
+  try {
+    await pull({
+      hosted: pluginHosted(pluginDetail({
+        sha256: sha('f1'), description: 'Fires clay', queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION,
+      })),
+      local,
+    });
+    assert.deepEqual(seen, [{ queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION }]);
+    assert.deepEqual(spanish, [{ text: 'hola mundo', version: ENRICHMENT_VERSION, before: '' }]);
+    const skill = await local.repo.getSkill('kiln');
+    assert.equal(skill.queries_es_text, 'hola mundo');
+    assert.equal(skill.enrichment_v, ENRICHMENT_VERSION);
+    const read = new DatabaseSync(path.join(dir, 'vault.db'), { readOnly: true, timeout: 1000 });
+    try {
+      assert.deepEqual(chunkRows(read).filter((row) => row.kind === 'query'), []);
+    } finally {
+      read.close();
+    }
+  } finally {
+    local.close();
+  }
+});
+
+localTest('a hosted rollback passes Spanish into setCurrentVersion and stores that content chunk', async () => {
+  const dir = await tempDir('sv-pull-rollback-');
+  const local = await createLocalApi({ dir, env: {} });
+  const shaA = sha('f2');
+  const shaB = sha('f3');
+  let detail = pluginDetail({
+    sha256: shaA, description: 'Fires clay', queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION,
+  });
+  const hosted = {
+    async list() {
+      return {
+        skills: [{
+          slug: 'kiln', name: 'Kiln', description: detail.description, kind: 'plugin', plugin_slug: null,
+          tags: ['kiln'], has_approved_version: true,
+        }],
+        total: 1,
+      };
+    },
+    async getSkill() { return detail; },
+    async download() { throw new Error('plugin has no tarball'); },
+  };
+  try {
+    await pull({ hosted, local });
+    detail = pluginDetail({
+      sha256: shaB, description: 'Cools clay', queriesEs: 'otra frase', enrichmentV: ENRICHMENT_VERSION,
+    });
+    await pull({ hosted, local });
+    const seen = [];
+    const setCurrentVersion = local.repo.setCurrentVersion.bind(local.repo);
+    local.repo.setCurrentVersion = async (args) => {
+      seen.push({ queriesEs: args.queriesEs ?? null, enrichmentV: args.enrichmentV ?? null });
+      return setCurrentVersion(args);
+    };
+    detail = pluginDetail({
+      sha256: shaA, description: 'Fires clay', queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION,
+    });
+    await pull({ hosted, local });
+    assert.deepEqual(seen, [{ queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION }]);
+    assert.equal((await local.repo.getSkill('kiln')).queries_es_text, 'hola mundo');
+    const read = new DatabaseSync(path.join(dir, 'vault.db'), { readOnly: true, timeout: 1000 });
+    try {
+      assert.deepEqual(
+        chunkRows(read).filter((row) => row.kind === 'content').map((row) => row.text),
+        ['Kiln\nFires clay\nkiln'],
+      );
+    } finally {
+      read.close();
+    }
+  } finally {
+    local.close();
+  }
+});
+
+localTest('setCurrentVersion without a key stores the content chunk texts and leaves Spanish empty', async () => {
+  const { db, repo } = await open();
+  try {
+    const first = sha('f4');
+    await publishCurrent({
+      repo, db,
+      manifest: manifest({ slug: 'kiln', sha256: first, kind: 'plugin', chunks: [{ text: 'first body', kind: 'content' }] }),
+      tarball: null,
+      chunks: [{ text: 'first body', kind: 'content' }],
+      key: null,
+      fetchImpl: gateway(),
+    });
+    await publishCurrent({
+      repo, db,
+      manifest: manifest({ slug: 'kiln', sha256: sha('f5'), kind: 'plugin', chunks: [{ text: 'second body', kind: 'content' }] }),
+      tarball: null,
+      chunks: [{ text: 'second body', kind: 'content' }],
+      key: null,
+      fetchImpl: gateway(),
+    });
+    const ids = await repo.setCurrentVersion({
+      slug: 'kiln', sha256: first, name: 'kiln', description: 'A useful skill', tags: ['kiln'],
+      chunks: [{ text: 'restored body', kind: 'content' }],
+    });
+    assert.ok(ids);
+    assert.deepEqual(chunkRows(db).map((row) => row.text), ['restored body']);
+    assert.equal(skillRow(db, ids.skillId).queries_es_text, '');
+    assert.equal(skillRow(db, ids.skillId).enrichment_v, null);
+    assert.equal(vecRows(db).length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('setCurrentVersion with a key stores a hosted Spanish phrase as one query chunk', async () => {
+  const { db, repo } = await open();
+  const fetchImpl = gateway();
+  try {
+    const current = sha('f6');
+    await publishCurrent({
+      repo, db,
+      manifest: manifest({ slug: 'kiln', sha256: current, kind: 'plugin', chunks: [{ text: 'body one', kind: 'content' }] }),
+      tarball: null,
+      chunks: [{ text: 'body one', kind: 'content' }],
+      key: KEY,
+      fetchImpl: gateway(),
+    });
+    await repo.setCurrentVersion({
+      slug: 'kiln', sha256: current, name: 'kiln', description: 'A useful skill', tags: ['kiln'],
+      chunks: [{ text: 'body one', kind: 'content' }],
+      queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION, key: KEY, fetchImpl,
+    });
+    assert.deepEqual(chunkRows(db).filter((row) => row.kind === 'content').map((row) => row.text), ['body one']);
+    assert.deepEqual(chunkRows(db).filter((row) => row.kind === 'query').map((row) => row.text), ['hola mundo']);
+    assert.equal(skillRow(db, chunkRows(db)[0].skill_id).queries_es_text, 'hola mundo');
+    assert.equal(fetchImpl.calls.some((call) => call.body?.input?.includes('hola mundo')), true);
+    assert.equal(fetchImpl.calls.some((call) => call.body?.input?.includes('hola') && !call.body.input.includes('hola mundo')), false);
+  } finally {
+    db.close();
+  }
+});
+
+function embedFetch(onCall) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url: String(url), input: body.input });
+    if (onCall) await onCall(calls.at(-1), calls.length);
+    if (String(url).includes('/embeddings') === false) {
+      return new Response('not embeddings', { status: 500 });
+    }
+    const input = Array.isArray(body.input) ? body.input : [];
+    return Response.json({
+      object: 'list',
+      data: input.map((_, index) => ({ object: 'embedding', index, embedding: vector(index + 4) })),
+      model: body.model,
+      usage: { prompt_tokens: input.length, total_tokens: input.length },
+    });
+  };
+  fetchImpl.calls = calls;
+  return fetchImpl;
+}
+
+localTest('setSpanish embeds the new query text before it replaces query chunks, and keeps a phrase whole', async () => {
+  const { db, repo } = await open();
+  try {
+    const published = await publishCurrent({
+      repo, db,
+      manifest: manifest({ slug: 'kiln', sha256: sha('f7'), kind: 'plugin', chunks: [{ text: 'body text', kind: 'content' }] }),
+      tarball: null,
+      chunks: [{ text: 'body text', kind: 'content' }],
+      key: KEY,
+      fetchImpl: gateway(),
+    });
+    const content = chunkRows(db).find((row) => row.kind === 'content');
+    db.prepare('delete from chunk_vecs where rowid = ?').run(BigInt(content.id));
+    const beforeQueries = chunkRows(db).filter((row) => row.kind === 'query').map((row) => row.text);
+    let queriesDuringEmbed = null;
+    const fetchImpl = embedFetch(() => {
+      if (queriesDuringEmbed === null) {
+        queriesDuringEmbed = chunkRows(db).filter((row) => row.kind === 'query').map((row) => row.text);
+      }
+    });
+    const wrote = await repo.setSpanish(
+      published.skillId, published.versionId, 'hola mundo', ENRICHMENT_VERSION, { key: KEY, fetchImpl },
+    );
+    assert.equal(wrote, true);
+    assert.deepEqual(queriesDuringEmbed, beforeQueries);
+    assert.deepEqual(fetchImpl.calls[0].input, ['hola mundo']);
+    assert.deepEqual(chunkRows(db).filter((row) => row.kind === 'query').map((row) => row.text), ['hola mundo']);
+    assert.deepEqual(chunkRows(db).filter((row) => row.kind === 'content').map((row) => row.text), ['body text']);
+    assert.equal(skillRow(db, published.skillId).queries_es_text, 'hola mundo');
+    assert.equal(vecRows(db).some((row) => Number(row.rowid) === content.id), true);
+    assert.ok(fetchImpl.calls.some((call, index) => index > 0 && call.input.includes('body text')));
+  } finally {
+    db.close();
+  }
+});
+
+localTest('a failed setSpanish embed leaves the old query chunks and Spanish text', async () => {
+  const { db, repo } = await open();
+  try {
+    const published = await publishCurrent({
+      repo, db,
+      manifest: manifest({ slug: 'kiln', sha256: sha('f8'), kind: 'plugin', chunks: [{ text: 'body text', kind: 'content' }] }),
+      tarball: null,
+      chunks: [{ text: 'body text', kind: 'content' }],
+      key: KEY,
+      fetchImpl: gateway(),
+    });
+    const beforeQueries = chunkRows(db).filter((row) => row.kind === 'query').map((row) => row.text);
+    const beforeText = skillRow(db, published.skillId).queries_es_text;
+    const fetchImpl = async () => new Response('no', { status: 502 });
+    const wrote = await repo.setSpanish(
+      published.skillId, published.versionId, 'hola mundo', ENRICHMENT_VERSION, { key: KEY, fetchImpl },
+    );
+    assert.equal(wrote, false);
+    assert.deepEqual(chunkRows(db).filter((row) => row.kind === 'query').map((row) => row.text), beforeQueries);
+    assert.equal(skillRow(db, published.skillId).queries_es_text, beforeText);
+  } finally {
+    db.close();
+  }
+});
+
+for (const mode of ['vectors', 'no-vectors', 'extension-disabled']) {
+  localTest(`setSpanish rejects non-string Spanish before network or writes (${mode})`, async () => {
+    const { db, repo } = await open(mode !== 'extension-disabled');
+    try {
+      const ids = await publishCurrent({
+        repo, db, manifest: manifest({ slug: 'kiln', sha256: sha('fa'), kind: 'plugin' }),
+        chunks: ['body text'], key: mode === 'vectors' ? KEY : null, fetchImpl: gateway(),
+      });
+      const before = { skill: skillRow(db, ids.skillId), chunks: chunkRows(db), vectors: vecRows(db), doc: docEs(db, ids.skillId) };
+      const fetchImpl = gateway();
+      for (const value of [[SECRET], { text: SECRET }, 42, true, null, undefined]) {
+        // Catch binding errors too: rejection must happen before any side effect, not after transmission.
+        const result = await repo.setSpanish(ids.skillId, ids.versionId, value, ENRICHMENT_VERSION, { key: KEY, fetchImpl }).catch(() => 'threw');
+        assert.equal(fetchImpl.calls.length, 0, 'invalid Spanish must never reach the Gateway');
+        assert.deepEqual({ skill: skillRow(db, ids.skillId), chunks: chunkRows(db), vectors: vecRows(db), doc: docEs(db, ids.skillId) }, before);
+        assert.equal(result, false);
+      }
+    } finally {
+      db.close();
+    }
+  });
+}
+
+localTest('same-sha pull reports failed Spanish embedding without recording success', async () => {
+  const dir = await tempDir('sv-pull-failed-es-');
+  let failEmbed = false;
+  const good = gateway();
+  const local = await createLocalApi({ dir, env: { AI_GATEWAY_API_KEY: KEY }, fetchImpl: (...args) => failEmbed ? new Response('no', { status: 502 }) : good(...args) });
+  try {
+    const detail = pluginDetail({ sha256: sha('fb'), description: 'Fires clay', queriesEs: 'primero', enrichmentV: ENRICHMENT_VERSION });
+    await local.repo.publish({ manifest: { ...manifest({ slug: 'kiln', sha256: detail.sha256, kind: 'plugin' }) }, chunks: ['body text'], queriesEs: 'primero', enrichmentV: ENRICHMENT_VERSION });
+    failEmbed = true;
+    const result = await pull({ hosted: pluginHosted({ ...detail, queries_es_text: 'otra frase', enrichment_v: ENRICHMENT_VERSION + 1 }), local });
+    assert.equal(result.failed.length, 1);
+    assert.deepEqual(result.pulled, []);
+    assert.deepEqual(result.unchanged, []);
+    assert.equal((await local.repo.getSkill('kiln')).queries_es_text, 'primero');
+    assert.equal(await local.repo.getPull('kiln'), null);
+  } finally {
+    local.close();
+  }
+});
+
+localTest('new publish fallback reports false setSpanish as failure without a pull record', async () => {
+  const dir = await tempDir('sv-pull-fallback-es-');
+  const local = await createLocalApi({ dir, env: {} });
+  // Exercise the real false return for a version that is no longer current.
+  const setSpanish = local.repo.setSpanish;
+  local.repo.setSpanish = (id, version, text, enrichment) => setSpanish(id, -1, text, enrichment);
+  try {
+    const result = await pull({ hosted: pluginHosted(pluginDetail({ sha256: sha('fc'), description: 'Fires clay', queriesEs: 'hola mundo', enrichmentV: ENRICHMENT_VERSION })), local });
+    assert.equal(result.failed.length, 1);
+    assert.deepEqual(result.pulled, []);
+    assert.equal((await local.repo.getSkill('kiln')).queries_es_text, '');
+    assert.equal(await local.repo.getPull('kiln'), null);
+  } finally {
+    local.close();
+  }
+});
+
+localTest('pull rejects non-string hosted Spanish before publishing or calling the Gateway', async () => {
+  const dir = await tempDir('sv-pull-invalid-es-');
+  const fetchImpl = gateway();
+  const local = await createLocalApi({ dir, env: { AI_GATEWAY_API_KEY: KEY }, fetchImpl });
+  try {
+    const result = await pull({ hosted: pluginHosted(pluginDetail({ sha256: sha('fd'), description: 'Fires clay', queriesEs: [SECRET], enrichmentV: ENRICHMENT_VERSION })), local });
+    assert.equal(fetchImpl.calls.length, 0);
+    assert.equal(await local.repo.getSkill('kiln'), null);
+    assert.equal(result.failed.length, 1);
+    assert.deepEqual(result.pulled, []);
+    assert.equal(await local.repo.getPull('kiln'), null);
+  } finally {
+    local.close();
+  }
+});
+
+for (const invalid of [{ plugin_slug: 'not a slug', kind: 'skill' }, { kind: 'unknown' }, { description: '   ' }]) {
+  localTest(`direct pull validates the full manifest: ${JSON.stringify(invalid)}`, async () => {
+    const dir = await tempDir('sv-pull-invalid-manifest-');
+    const local = await createLocalApi({ dir, env: {} });
+    try {
+      const detail = { ...pluginDetail({ sha256: sha('fe'), description: 'Fires clay', queriesEs: '', enrichmentV: null }), ...invalid };
+      const result = await pull({ hosted: pluginHosted(detail), local });
+      assert.equal(result.failed.length, 1);
+      assert.deepEqual(result.pulled, []);
+      assert.equal(await local.repo.getSkill('kiln'), null);
+      assert.equal(await local.repo.getPull('kiln'), null);
+    } finally {
+      local.close();
+    }
+  });
+}
+
+localTest('setSpanish clears an empty string without embedding or reading chunk_vecs', async () => {
+  const { db, repo } = await open(false);
+  const fetchImpl = embedFetch();
+  try {
+    const published = await publishCurrent({
+      repo, db,
+      manifest: manifest({ slug: 'kiln', sha256: sha('f9'), kind: 'plugin', chunks: [{ text: 'body text', kind: 'content' }] }),
+      tarball: null,
+      chunks: [{ text: 'body text', kind: 'content' }],
+      key: null,
+      fetchImpl: gateway(),
+    });
+    db.exec('create table chunk_vecs (id integer)');
+    const prepare = db.prepare.bind(db);
+    db.prepare = (sql) => {
+      if (/\bchunk_vecs\b/i.test(sql) && !/sqlite_master/i.test(sql)) throw new Error('no such module: vec0');
+      return prepare(sql);
+    };
+    assert.equal(await repo.setSpanish(published.skillId, published.versionId, 'primero', 2, { key: KEY, fetchImpl }), true);
+    assert.equal(await repo.setSpanish(published.skillId, published.versionId, '', 2, { key: KEY, fetchImpl }), true);
+    assert.equal(skillRow(db, published.skillId).queries_es_text, '');
+    assert.equal(skillRow(db, published.skillId).enrichment_v, null);
+    assert.equal(fetchImpl.calls.length, 0);
   } finally {
     db.close();
   }

@@ -10,6 +10,7 @@ import { ENRICH_ES_JSON_SCHEMA, ENRICHMENT_VERSION, MAX_BODY_CHARS, buildPrompt 
 import { LIMITS, cleanQueries, stripUnsafe } from '../lib/enrichment-limits.mjs';
 import { loadSuggestConfig } from '../lib/suggest-config.mjs';
 import { findSecrets } from './scan.mjs';
+import { loadVec as defaultLoadVec } from '../lib/local/vec.mjs';
 
 export const GATEWAY_URL = 'https://ai-gateway.vercel.sh/v1/chat/completions';
 // A reasoning model answers in about 6 s; this is the ceiling for one request.
@@ -50,6 +51,66 @@ function requestFailure(e) {
   return 'request failed (network error)';
 }
 
+function extensionsAllowed(db) {
+  try {
+    db.enableLoadExtension(true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function chunkVecsNamed(db) {
+  return db.prepare("select count(*) as n from sqlite_master where name = 'chunk_vecs'").get().n === 1;
+}
+
+// 'blocked' is a chunk_vecs name that cannot be queried. Do not select that table: vec0 is not loaded.
+function vecDecision(db, loadVecImpl) {
+  if (!db) return 'text';
+  if (!extensionsAllowed(db)) return chunkVecsNamed(db) ? 'blocked' : 'text';
+  let loaded = false;
+  try {
+    loaded = loadVecImpl(db) === true;
+  } catch (error) {
+    if (String(error?.message ?? '').includes('extension loading is not allowed')) throw error;
+    loaded = false;
+  }
+  if (loaded) return 'vectors';
+  return chunkVecsNamed(db) ? 'blocked' : 'text';
+}
+
+function hasSecret(strings) {
+  const files = [];
+  strings.forEach((text, index) => {
+    if (typeof text !== 'string' || text === '') return;
+    text.split('\0').forEach((part, partIndex) => {
+      if (part === '') return;
+      files.push({ path: `part-${index}-${partIndex}.txt`, data: Buffer.from(part) });
+    });
+  });
+  return files.length > 0 && findSecrets(files).length > 0;
+}
+
+function contentWithoutVectors(db, skillId) {
+  return db.prepare(
+    `select c.id, c.text from chunks c
+      where c.skill_id = ? and c.kind = 'content'
+        and not exists (select 1 from chunk_vecs v where v.rowid = c.id)`,
+  ).all(skillId);
+}
+
+async function embedEnrichment({ db, skillId, queries, key, fetchImpl }) {
+  const missing = contentWithoutVectors(db, skillId);
+  const texts = [...queries, ...missing.map((row) => row.text)];
+  if (hasSecret(texts)) return null;
+  const { embedTexts } = await import('./embed-local.mjs');
+  const vectors = await embedTexts({ texts, key, fetchImpl });
+  return {
+    queryVectors: vectors.slice(0, queries.length),
+    contentVectors: missing.map((row, index) => ({ id: row.id, vector: vectors[queries.length + index] })),
+  };
+}
+
 async function queriesFor({ payload, model, key, fetchImpl }) {
   const { system, prompt } = buildPrompt(payload, { spanishOnly: true });
   let res;
@@ -86,7 +147,9 @@ async function queriesFor({ payload, model, key, fetchImpl }) {
 // `config` is loadSuggestConfig's result. Returns { enriched: slug[], skipped: [{ slug, reason }], failed: [{ slug, error }] }.
 // A key file in the wrong mode throws a UserError. `log` receives one notice when enrichment is off or has no key, and one
 // line per skill.
-export async function enrichLocal({ repo, slugs, stale = false, config, env = process.env, dir, fetchImpl = fetch, log = () => {} }) {
+export async function enrichLocal({
+  repo, slugs, stale = false, config, env = process.env, dir, fetchImpl = fetch, log = () => {}, db = null, loadVec = defaultLoadVec,
+}) {
   const result = { enriched: [], skipped: [], failed: [] };
   if (!config.enrich.enabled) {
     log('enrich is off: set enrich.enabled to true in config.json to send skill text to the AI Gateway');
@@ -97,6 +160,10 @@ export async function enrichLocal({ repo, slugs, stale = false, config, env = pr
     log(`enrich: no AI Gateway key, nothing was sent (set AI_GATEWAY_API_KEY, or put the key in ${path.join(dir, KEY_FILE)} with mode 0600)`);
     return result;
   }
+  const database = db ?? repo.db ?? null;
+  const decision = vecDecision(database, loadVec);
+  if (decision === 'blocked') return result;
+  const vectors = decision === 'vectors';
 
   const wanted = slugs?.length ? [...new Set(slugs)] : null;
   const targets = await repo.listEnrichTargets({ slugs: wanted, stale });
@@ -116,7 +183,21 @@ export async function enrichLocal({ repo, slugs, stale = false, config, env = pr
     if (found.length) { skip(t.slug, `secret-scan flagged ${found[0].pattern}`); continue; }
     try {
       const queries = await queriesFor({ payload, model: config.enrich.model, key, fetchImpl });
-      if (!(await repo.setSpanish(t.id, t.version_id, queries.join(' '), ENRICHMENT_VERSION))) {
+      if (vectors) {
+        if (hasSecret(queries)) { skip(t.slug, 'secret-scan flagged query'); continue; }
+        const embedded = await embedEnrichment({ db: database, skillId: t.id, queries, key, fetchImpl });
+        if (!embedded) { skip(t.slug, 'secret-scan flagged query'); continue; }
+        const wrote = await repo.replaceSpanishChunks({
+          skillId: t.id,
+          versionId: t.version_id,
+          queriesEsText: queries.join(' '),
+          enrichmentV: ENRICHMENT_VERSION,
+          queryChunks: queries,
+          queryVectors: embedded.queryVectors,
+          contentVectors: embedded.contentVectors,
+        });
+        if (!wrote) { skip(t.slug, 'a new version was published meanwhile'); continue; }
+      } else if (!(await repo.setSpanish(t.id, t.version_id, queries.join(' '), ENRICHMENT_VERSION))) {
         skip(t.slug, 'a new version was published meanwhile');
         continue;
       }
@@ -135,8 +216,8 @@ export const enrichSummary = (e) => `enriched: ${e.enriched.length}, skipped: ${
 
 // The body of `headjack enrich`: enriches, prints the summary through `log` and returns the exit code (1 when any skill
 // failed). A UserError from enrichLocal (a refused key file) propagates: the CLI reports it and exits 2.
-export async function enrichCommand({ repo, slugs, stale, config, env, dir, fetchImpl, log }) {
-  const result = await enrichLocal({ repo, slugs, stale, config, env, dir, fetchImpl, log });
+export async function enrichCommand({ repo, slugs, stale, config, env, dir, fetchImpl, log, db, loadVec }) {
+  const result = await enrichLocal({ repo, slugs, stale, config, env, dir, fetchImpl, log, db, loadVec });
   log(enrichSummary(result));
   return result.failed.length ? 1 : 0;
 }
@@ -148,7 +229,10 @@ export async function enrichAfterImport({ repo, published, env, dir, fetchImpl, 
   try {
     const config = await loadSuggestConfig(dir);
     if (!config.enrich.enabled || !published.length) return;
-    const result = await enrichLocal({ repo, slugs: published, stale: false, config, env, dir, fetchImpl, log });
+    const targets = await repo.listEnrichTargets({ slugs: published });
+    const pending = targets.filter((target) => target.enrichment_v !== ENRICHMENT_VERSION).map((target) => target.slug);
+    if (!pending.length) return;
+    const result = await enrichLocal({ repo, slugs: pending, stale: false, config, env, dir, fetchImpl, log });
     if (result.enriched.length + result.skipped.length + result.failed.length) log(enrichSummary(result));
   } catch (e) {
     try {
