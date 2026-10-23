@@ -255,3 +255,40 @@ describe('local embedder', { concurrency: false }, () => {
     assert.equal(httpBlob.includes(KEY), false);
   });
 });
+
+const TEST_DEADLINE_MS = 20;
+const TEST_WATCHDOG_MS = 500;
+for (const phase of ['request', 'body']) {
+  test(`F6 deadline bounds uncooperative pending ${phase} and aborts without leaking`, async () => {
+    let signal;
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const response = { ok: true, json: () => phase === 'body' ? pending : Promise.resolve(gatewayPayload([floats(1536, 1)])) };
+    const fetchImpl = async (_url, init) => {
+      signal = init.signal;
+      return phase === 'request' ? pending : response;
+    };
+    let watchdog;
+    try {
+      const outcome = await Promise.race([
+        embedTexts({ texts: [PHRASE], key: KEY, fetchImpl, timeoutMs: TEST_DEADLINE_MS }).then(() => 'resolved', e => e),
+        new Promise(resolve => { watchdog = setTimeout(() => resolve('watchdog'), TEST_WATCHDOG_MS); }),
+      ]);
+      assert.ok(outcome instanceof Error, `must reject before watchdog, got ${outcome}`);
+      assert.match(outcome.message, /timed out/);
+      assert.ok(rejectsWithoutLeak(outcome));
+      assert.equal(signal?.aborted, true);
+    } finally {
+      clearTimeout(watchdog);
+      release(phase === 'request' ? response : gatewayPayload([floats(1536, 1)]));
+    }
+  });
+}
+
+for (const phase of ['request', 'body']) {
+  test(`F6 ${phase} rejection remains content-free with the deadline enabled`, async () => {
+    const fail = () => { throw new Error(`${KEY} ${PHRASE} ${BODY_MARKER}`); };
+    const fetchImpl = phase === 'request' ? fail : async () => ({ ok: true, json: fail });
+    await assert.rejects(embedTexts({ texts: [PHRASE], key: KEY, fetchImpl, timeoutMs: TEST_WATCHDOG_MS }), rejectsWithoutLeak);
+  });
+}
