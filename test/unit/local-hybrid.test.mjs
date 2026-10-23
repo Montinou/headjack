@@ -267,3 +267,147 @@ localTest('manual embedding failure retains full-text signals and makes just one
   assert.equal(found.candidates[0].vector_rank, null);
   assert.equal(found.candidates[0].similarity, null);
 });
+
+// Phase 3 review regressions: real SQLite and in-process Gateway fixtures only.
+localTest('F1 vector cleanup/count/KNN failures return filtered full text with null vector fields', async () => {
+  const { searchHybrid } = await import('../../lib/local/hybrid.mjs');
+  for (const fragment of ['delete from chunk_vecs where not exists', 'select count(*) as n from chunk_vecs', 'embedding match']) {
+    const db = await fixture();
+    let injected = false;
+    const wrapped = new Proxy(db, { get(target, key) {
+      if (key === 'prepare') return sql => {
+        if (sql.includes(fragment)) { injected = true; throw Error('vector query unavailable'); }
+        return target.prepare(sql);
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    try {
+      const rows = await searchHybrid({ db: wrapped, repo: createSqliteRepo(wrapped), query: 'kilnstone', embed: async () => [vector()], limit: 1, tags: ['wanted'], kind: 'skill' });
+      assert.equal(injected, true);
+      assert.deepEqual(rows.map(r => r.slug), ['s1']);
+      assert.ok(rows.every(r => r.vector_rank === null && r.similarity === null && r.matched === 'fts'));
+      assert.equal(db.isTransaction, false);
+      assert.equal(db.prepare('select count(*) n from chunk_vecs').get().n, 4, 'failed vector cleanup rolls back');
+    } finally { db.close(); }
+  }
+});
+
+localTest('F1 vector busy and damaged errors retain their classification', async () => {
+  const { searchHybrid } = await import('../../lib/local/hybrid.mjs');
+  const db = await fixture();
+  try {
+    for (const errcode of [5, 11, 26]) {
+      const error = Object.assign(Error('database failure'), { code: 'ERR_SQLITE_ERROR', errcode });
+      const repo = { ...createSqliteRepo(db), searchVector: async () => { throw error; } };
+      await assert.rejects(searchHybrid({ db, repo, query: 'kilnstone', embed: async () => [vector()], limit: 5, tags: [] }), e => e === error);
+    }
+  } finally { db.close(); }
+});
+
+localTest('F2 hybrid newer-schema vault skips with and without a key or migration', async () => {
+  const { MIGRATIONS } = await import('../../lib/local/schema.mjs');
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  const dir = await callerFixture();
+  const db = new DatabaseSync(vaultFile(dir));
+  db.exec(`PRAGMA user_version = ${MIGRATIONS.length + 1}`);
+  db.close();
+  let fetched = 0;
+  for (const migrate of [false, true]) {
+    for (const env of [{}, { AI_GATEWAY_API_KEY: 'test-fixture' }]) {
+      const result = await localSearch({ dir, query: 'cron', hybrid: true, migrate, env, fetchImpl: async () => { fetched++; return Response.json({}); } });
+      assert.deepEqual(result, { outcome: 'skipped:schema' });
+    }
+  }
+  assert.equal(fetched, 0);
+});
+
+localTest('F3 recognized query secrets including NUL-separated text never reach the Gateway or diagnostics', async () => {
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  const dir = await callerFixture();
+  const secret = 'ghp_' + 'A'.repeat(36); // synthetic, never a usable credential
+  const logged = [];
+  const original = console.error;
+  console.error = (...args) => logged.push(args);
+  let fetched = 0;
+  try {
+    for (const separator of [' ', '\0']) {
+      const result = await localSearch({ dir, query: `deploy recurring cron jobs${separator}${secret}`, hybrid: true, env: { AI_GATEWAY_API_KEY: 'test-fixture' }, fetchImpl: async () => { fetched++; return Response.json({ data: [{ index: 0, embedding: vector() }] }); } });
+      assert.equal(result.candidates[0].slug, 'cron-top');
+      assert.equal(fetched, 0, 'recognized secret must stay local');
+      assert.equal(result.candidates[0].vector_rank, null);
+      assert.equal(result.candidates[0].similarity, null);
+    }
+    assert.ok(!JSON.stringify(logged).includes(secret));
+  } finally { console.error = original; }
+});
+
+localTest('F4 replacement during embedding refreshes offer signals and metadata to the current version', async () => {
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  const { passes } = await import('../../lib/suggest-rule.mjs');
+  const { publishCurrent } = await import('../../lib/local/publish-current.mjs');
+  for (const body of ['gardening tomatoes', 'deploy recurring cron jobs']) {
+    const dir = await callerFixture();
+    const publisher = openVault({ dir, DatabaseSync, allowExtension: true });
+    publisher.exec('PRAGMA busy_timeout = 0');
+    try {
+      const result = await localSearch({ dir, query: 'deploy recurring cron jobs', hybrid: true, env: { AI_GATEWAY_API_KEY: 'test-fixture' }, fetchImpl: async () => {
+        await publishCurrent({ db: publisher, repo: createSqliteRepo(publisher), manifest: { slug: 'cron-top', name: 'Replacement', description: body, kind: 'skill', tags: ['replacement'], sha256: 'replacement', status: 'approved', review_notes: 'ok' }, chunks: [body] });
+        return Response.json({ data: [{ index: 0, embedding: vector() }] });
+      } });
+      const current = await localSearch({ dir, query: 'deploy recurring cron jobs' });
+      const offered = result.candidates.filter(c => passes(c, 'local').pass);
+      assert.deepEqual(offered.map(c => c.slug), current.candidates.filter(c => passes(c, 'local').pass).map(c => c.slug));
+      const candidate = result.candidates.find(c => c.slug === 'cron-top');
+      if (body === 'gardening tomatoes') assert.equal(candidate, undefined, 'obsolete version must not remain eligible or visible');
+      else {
+        assert.equal(candidate.name, 'Replacement');
+        assert.equal(candidate.description, body);
+        assert.deepEqual(candidate.tags, ['replacement']);
+        assert.equal(candidate.vector_rank, null, 'replacement must not inherit old vectors');
+      }
+    } finally { publisher.close(); }
+  }
+});
+
+localTest('F4 decision signals and fused metadata share a snapshot after embedding', async () => {
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  const dir = await callerFixture();
+  const publisher = openVault({ dir, DatabaseSync });
+  publisher.exec('PRAGMA busy_timeout = 0');
+  let attempted = false;
+  let publishError;
+  let reader;
+  const CheckedDatabase = function(file, options) {
+    const db = new DatabaseSync(file, options);
+    reader = db;
+    return new Proxy(db, { get(target, key) {
+      if (key === 'prepare') return sql => {
+        const statement = target.prepare(sql);
+        if (!sql.includes('s.description, s.kind, s.tags, v.review_notes')) return statement;
+        return { all(...args) {
+          const rows = statement.all(...args);
+          attempted = true;
+          try { publisher.exec("update skills set name = 'Incoherent', description = 'changed' where id = 1"); }
+          catch (error) { publishError = error; }
+          return rows;
+        } };
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  };
+  try {
+    let outsideTransaction = false;
+    const result = await localSearch({ dir, DatabaseSync: CheckedDatabase, query: 'deploy recurring cron jobs', hybrid: true, env: { AI_GATEWAY_API_KEY: 'test-fixture' }, fetchImpl: async () => {
+      outsideTransaction = !reader.isTransaction;
+      return Response.json({ data: [{ index: 0, embedding: vector() }] });
+    } });
+    assert.equal(outsideTransaction, true, 'Gateway must run outside a transaction');
+    assert.equal(attempted, true);
+    assert.equal(publishError?.errcode, 5, 'publisher cannot change versions between decision and fused reads');
+    assert.equal(result.candidates[0].name, 'cron-top');
+    assert.equal(result.candidates[0].description, 'deploy recurring cron jobs');
+    publisher.exec("update skills set name = 'After read' where id = 1");
+  } finally { publisher.close(); }
+});
