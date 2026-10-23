@@ -318,7 +318,7 @@ async function main(argv) {
           const mode = asked ?? (config.suggest.hosted ? 'hosted' : 'local');
           const report = await calibrate({
             rows, mode, config, cwd: ctx.cwd, home: ctx.home,
-            depsFor: (sessionId) => suggestDeps({ ctx, config, sessionId, purpose: 'eval', migrate: true }),
+            depsFor: (sessionId) => suggestDeps({ ctx, config, sessionId, purpose: 'eval', migrate: true, hybrid: true }),
           });
           // The kept search records stay out of the JSON: they are working data, not the report.
           console.log(o.json ? JSON.stringify({ ...report, rows: report.rows.map(({ record, ...row }) => row) }, null, 2) : formatCalibration(report));
@@ -359,7 +359,7 @@ async function main(argv) {
         const config = await loadSuggestConfig(ctx.dir);
         const mode = config.suggest.hosted ? 'hosted' : 'local';
         // The mode follows suggest.hosted only, never HEADJACK_MODE or HEADJACK_URL; the manual entry also migrates the vault.
-        const deps = suggestDeps({ ctx, config, sessionId, migrate: true });
+        const deps = suggestDeps({ ctx, config, sessionId, migrate: true, hybrid: true });
         const started = Date.now();
         // The event carries no prompt text (spec §5.1); a failed search is logged as an 'error' run before it is reported.
         const logRun = (r) => appendEvent(ctx.dir, {
