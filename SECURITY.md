@@ -30,9 +30,23 @@ that this code makes exploitable is in scope.
 
 ## What suggestions and enrichment send
 
-With `suggest.hosted` false (the default, whatever `HEADJACK_MODE` says), suggestions make no network call. These
-features send text off the machine, each opt-in. Hosted mode itself also sends search queries (in the URL), skill
+With `suggest.hosted` false (the default, whatever `HEADJACK_MODE` says), the local prompt hook stays offline.
+No-key local full-text search also stays offline, but a configured Gateway key enables other local network paths below.
+`enrich.enabled: false` does not disable all of them. Hosted mode separately sends search queries (in the URL), skill
 content on `import` and `review`, and install records on `add` to the server.
+
+- **Keyed local retrieval.** Local search, manual `headjack suggest` and local calibration can send the query to the
+  AI Gateway for embeddings when sqlite-vec loads. Suggestions/calibration use the prepared query (pasted/fenced blocks
+  removed, at most 300 characters); the hook does not use this hybrid path. The exact outbound query is secret-scanned,
+  including NUL-separated segments. A hit, missing key/vec or embedding failure uses full-text retrieval instead.
+  Manual suggestions retain lexical decision rules; vector neighbors and diagnostics do not alone qualify a suggestion.
+- **Approved local publishing and `headjack embed`.** With a key and loadable vec, these can send skill name,
+  description and content to generate Spanish example requests, then content and query chunks for embeddings,
+  independently of `enrich.enabled`. Current enrichment can be reused without a chat request. Enrichment inputs,
+  content and generated queries are scanned before the respective outgoing step, including NUL-separated segments.
+  A flagged input prevents that step; a flagged generated query may be detected after the chat request already happened.
+  Publishing retains content-only fallback on enrichment/embedding failure; backfill reports skips/failures and can be rerun.
+  These scans recognize known patterns, not every secret or sensitive passage.
 
 - **Hosted suggestions** (`suggest.hosted` is true in `config.json`). Each prompt that reaches the search, from the
   plugin hook or from `headjack suggest`, is cleaned first: `<pasted_content>` blocks and fenced code blocks are removed and the
@@ -47,7 +61,8 @@ content on `import` and `review`, and install records on `add` to the server.
   (`cli/hook.mjs`).
 - **`headjack enrich`** (and `import` while it is on) is off unless `enrich.enabled` is true and an AI Gateway key is
   present. It sends each skill's name, description and first 6,000 body characters to the Vercel AI Gateway, only after
-  a secret scan of exactly that text; a skill that trips the scan is skipped (`cli/enrich-local.mjs`).
+  a secret scan of exactly that text; a skill that trips the scan is skipped (`cli/enrich-local.mjs`). With vec available,
+  it also sends generated queries and stored content chunks missing vectors for embeddings, after scanning those texts.
 
 On disk, `<state dir>/suggest/log.jsonl` and `<state dir>/suggest/sessions/` hold slugs, outcomes and timings, never
 prompt text. A prompt is stored locally only in `<state dir>/suggest/cases.jsonl`, and only when you run

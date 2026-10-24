@@ -56,6 +56,14 @@ suggestion log, how many suggestions were taken (hit), left alone (ignored) or b
 language including 8 with slug: null): precision, recall and latency per language with their raw counts, and 5-fold
 cross-validated thresholds printed as guidance. --mode picks the search (default: suggest.hosted). It never writes config.json.
 
+embed (local mode only; no flags or slugs) backfills current versions, independently of enrich.enabled. Requires an AI
+Gateway key in AI_GATEWAY_API_KEY or <state dir>/ai-gateway-key (mode 0600), and loadable sqlite-vec (HEADJACK_VEC_PATH
+can override its path). Sends scanned skill text for stale Spanish enrichment (openai/gpt-5-mini), then content/query
+chunks for embeddings (EMBED_MODEL, default openai/text-embedding-3-small). Reruns skip complete/current items; other
+skips include secret-scan hits. Prints examined/embedded/skipped/failed counts. Exits 2 for missing prerequisites or bad
+usage, 1 for per-item failures, 0 when none failed; a busy vault exits 3. With no vault, successful preflight yields
+all-zero counts and exit 0 without creating one. No force or dry-run option.
+
 enrich (local mode only) writes Spanish example requests for vault skills so Spanish prompts match them. It is opt-in: set
 "enrich": { "enabled": true } in <state dir>/config.json and give an AI Gateway key in AI_GATEWAY_API_KEY or in
 <state dir>/ai-gateway-key (mode 0600). It sends each skill's name, description and the first 6,000 characters of its body to the

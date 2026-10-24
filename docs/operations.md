@@ -178,12 +178,21 @@ each; `test/unit/env-example.test.mjs` keeps it complete. In short:
 | Database | `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `DATABASE_URL_APP`, `HEADJACK_APP_DB_PASSWORD`, `DATABASE_URL_OWNER` |
 | Authentication | `CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_AUTHORIZED_PARTIES` |
 | Flags | `FLAGS`, `FLAGS_SECRET` |
-| AI | `AI_GATEWAY_API_KEY` (also read by `headjack enrich`), `VERCEL_OIDC_TOKEN`, `EMBED_MODEL`, `ENRICH_MODEL` |
+| AI | `AI_GATEWAY_API_KEY` (also used by keyed local retrieval, publishing, enrich and embed), `VERCEL_OIDC_TOKEN` (server/scripts), `EMBED_MODEL` (local and hosted), `ENRICH_MODEL` (hosted/server scripts only) |
 | Server jobs | `CRON_SECRET`, `GITHUB_TOKEN`, `SEARCH_EVENTS_HMAC_KEY` |
 | OAuth | `HEADJACK_AUTH_SERVER_URL`, `HEADJACK_API_RESOURCE_URL`, `HEADJACK_CLI_CLIENT_ID` |
 | MCP | `MCP_RESOURCE_URL`, `MCP_ALLOWED_ORIGINS`, `MCP_CURSOR_SECRET` |
 | Scripts | `HEADJACK_OWNER_ID`, `HEADJACK_OVERRIDE_CONTROL`, `HEADJACK_OVERRIDE_BILINGUAL`, `TARGET`, `VERCEL_AUTOMATION_BYPASS_SECRET` |
 | CLI | `HEADJACK_MODE`, `HEADJACK_URL`, `HEADJACK_TOKEN`, `HEADJACK_HOME`, `HEADJACK_PURPOSE`, `HEADJACK_EXCLUDED_ROOTS`, `HEADJACK_UPDATE_TTL_HOURS`, `HEADJACK_DEBUG`, `HEADJACK_MCP_TIMEOUT_MS` |
+
+`ENRICH_MODEL` controls hosted/server-script enrichment (default `openai/gpt-5-mini`), not the local CLI.
+Local `headjack enrich` and its post-import workflow honor `config.json`'s `enrich.model` (same default);
+approved local publishing and `headjack embed` instead use fixed `openai/gpt-5-mini`, independently of `enrich.enabled`.
+`EMBED_MODEL` is used by both local and hosted embedding paths (default `openai/text-embedding-3-small`);
+both indexes expect 1536 dimensions. Local Gateway calls use `AI_GATEWAY_API_KEY` or the mode-0600
+`<state dir>/ai-gateway-key` file, not `VERCEL_OIDC_TOKEN`. See the
+[local backfill guidance](../README.md#local-embedding-backfill) for `headjack embed`; the hosted backfill scripts above
+have a separate command surface.
 
 For local work on the app, copy `.env.example` to `.env.local` (git ignores it) and fill in what you use. Never commit a
 value, and never paste one into an issue or a chat.
