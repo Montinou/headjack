@@ -125,7 +125,7 @@ async function promptHook({ stdin, env, home, dir, now, adapters, t0 }) {
   // cleared as soon as the race ends, so nothing else keeps the process alive.
   const abort = new AbortController();
   let over = false;
-  const base = suggestDeps({ ctx: { env, dir, home, cwd }, config, sessionId, migrate: false, signal: abort.signal, adapters });
+  const base = suggestDeps({ ctx: { env, dir, home, cwd }, config, sessionId, migrate: false, hybrid: false, signal: abort.signal, adapters });
   // After the deadline nothing may be remembered as suggested: the user never saw it.
   const deps = { ...base, now, sessionStore: { seen: (id) => base.sessionStore.seen(id), add: (id, slugs) => (over ? Promise.resolve() : base.sessionStore.add(id, slugs)) } };
   let timer;

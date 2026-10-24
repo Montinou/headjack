@@ -561,3 +561,39 @@ test('cli: the hook process exits within the deadline when the credential refres
     server.close();
   }
 });
+
+localTest('prompt local path with a Gateway key never fetches or enables/loads extensions', async () => {
+  const box = await seededSandbox();
+  await enable(box.dir);
+  const originalFetch = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = async () => { fetched++; throw Error('hook must stay offline'); };
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  const { DatabaseSync } = await runtimeCheck();
+  const opens = [];
+  const hybridOptions = [];
+  let extensionAttempts = 0;
+  const CheckedDatabase = function(file, options) {
+    opens.push(options);
+    const db = new DatabaseSync(file, options);
+    return new Proxy(db, { get(target, key) {
+      if (key === 'loadExtension') return () => { extensionAttempts++; throw Error('hook must not load vec'); };
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  };
+  try {
+    await hook('prompt', box, {
+      env: { HOME: box.home, AI_GATEWAY_API_KEY: 'test-fixture' },
+      adapters: { localSearch: args => {
+        hybridOptions.push(args.hybrid);
+        return localSearch({ ...args, DatabaseSync: CheckedDatabase });
+      } },
+    });
+    assert.ok(opens.length > 0);
+    assert.deepEqual(hybridOptions, [false]);
+    assert.ok(opens.every(options => options?.allowExtension !== true), 'hook must not enable extensions');
+    assert.equal(extensionAttempts, 0, 'hook must not load vec');
+    assert.equal(fetched, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});
