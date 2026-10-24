@@ -26,16 +26,19 @@ It has three parts:
   the hosted section [below](#hosted-invite-only)).
 
 The CLI runs in two modes. **Local mode** keeps the vault in a SQLite file on your machine (`~/.headjack/vault.db`) and
-needs no server, no account and no network for search; it is the default when `HEADJACK_URL` is unset, and
+needs no server or account; no-key full-text search stays offline. It is the default when `HEADJACK_URL` is unset, and
 `HEADJACK_MODE=local|remote` overrides. It needs **Node 22.16 or later, or Node 24 or later**, because the SQLite bundled in
-earlier releases lacks the full-text index it relies on; the CLI checks this and says so when it is not met. Search is
-keyword search over each skill's name, description, tags and body, and local mode is single-user, one vault per machine.
+earlier releases lacks the full-text index it relies on; the CLI checks this and says so when it is not met. Default local
+search is full-text search over stored name, description, tags and indexed body excerpts. With a Gateway key and loadable
+sqlite-vec, hybrid search combines stored-chunk vectors and full-text matches using reciprocal rank fusion (RRF).
+Missing key/vec, secret-flagged queries or embedding failures leave full-text retrieval available. Local mode is
+single-user, one vault per machine.
 **Hosted mode** talks to the invite-only instance and needs only Node 20.9 or later.
 
 ## Quickstart: local
 
-The vault lives on your machine; nothing is uploaded anywhere. You need Node 22.16 or later (or Node 24+). The loop is three
-commands:
+The vault lives on your machine. No-key search stays offline; keyed local features can send text to the AI Gateway
+(see [Security model](#security-model)). You need Node 22.16 or later (or Node 24+). The loop is three commands:
 
 ```sh
 headjack search "render a video with remotion"     # find a skill
@@ -221,6 +224,7 @@ headjack review https://github.com/owner/repo --path skills/x   # review a sourc
 headjack updates                                        # upstream changes waiting for review
 headjack verify                                         # check local copies and links against their recorded hashes
 headjack suggest "deploy a next app to vercel"          # skills in the vault that fit a request and are not active yet
+headjack embed                                         # local embedding backfill; requires Gateway key + sqlite-vec
 ```
 
 Harnesses: `claude`, `codex` and `grok` (the default for `--to`) and 24 more (`gemini`, `cursor`, `windsurf`, `cline`, and
@@ -291,12 +295,16 @@ when it starts with `/`, is a short acknowledgement ("ok", "thanks"), sits under
 fewer than 25 useful characters once `<pasted_content>` blocks and fenced code are removed. A session is not offered the
 same skill twice (session state is kept for 24 hours).
 
-`headjack suggest "<text>"` runs the same search by hand, ignoring `enabled` and the `/`, acknowledgement and
+`headjack suggest "<text>"` runs suggestions by hand, ignoring `enabled` and the `/`, acknowledgement and
 `disabledPaths` rules (the 25-character minimum still applies; `--json` for agents,
 `--explain` for why each candidate was or was not offered, `--session-id <id>` to count it against a session). It prints
 nothing when local mode finds no vault.
 
-Local mode, the default, sends nothing anywhere. The mode follows `suggest.hosted` only, whatever `HEADJACK_MODE` says.
+The local prompt hook stays offline. Manual local `suggest` and local calibration can send the prepared query to the
+AI Gateway for embeddings when a key and loadable sqlite-vec are available; they add hybrid diagnostics and vector
+neighbors but still use lexical signals to decide what to suggest. Without a key, or when vec is unavailable, the query
+is secret-flagged or embedding fails, retrieval falls back to full text. The mode follows `suggest.hosted` only,
+whatever `HEADJACK_MODE` says.
 In hosted mode the first 300 characters of the prompt, after removing `<pasted_content>` blocks and fenced code blocks,
 are sent to that server in a POST body. Inline code, indented code and anything else in those 300 characters are sent as
 typed: prompts get no secret scan. The server ranks with the text (which includes an embeddings call through the AI
@@ -354,13 +362,35 @@ never printed or logged. Without slugs it takes the skills that have no Spanish 
 by an older prompt, and slugs name skills explicitly. With enrichment enabled, `import` also enriches the skills it
 publishes. Hosted skills are enriched by the server, so the command exits 2 in hosted mode.
 
+#### Local embedding backfill
+
+Run `headjack embed` in local mode to backfill current vault versions. It accepts no flags or slugs (no force or dry-run).
+It requires an AI Gateway key (`AI_GATEWAY_API_KEY` or `<state dir>/ai-gateway-key`, mode 0600) and loadable sqlite-vec;
+[`HEADJACK_VEC_PATH` in `.env.example`](.env.example) overrides the bundled extension path. Missing key or unavailable
+vec exits **2**. Preflight runs before opening/migrating the vault; if no vault exists after successful preflight, it
+prints all-zero counts and exits **0**, without creating one.
+
+Independently of `enrich.enabled`, backfill sends scanned name/description/content to the Gateway for stale Spanish
+enrichment using `openai/gpt-5-mini`, then stored content and query chunks for embeddings using `EMBED_MODEL`
+(default `openai/text-embedding-3-small`, 1536 dimensions). Current enrichment is reused, even when its text is empty.
+Reruns skip current versions with current enrichment, content chunks, vectors for every chunk and matching query text;
+secret-flagged items and concurrent changes can also count as skipped. The summary is `examined`, `embedded`, `skipped`,
+`failed`: exit **1** for per-item failures, **0** when none failed (not a guarantee that every item was embedded).
+Usage/prerequisite errors exit **2**; a busy vault uses the CLI's transient-error exit **3**. See
+[`SECURITY.md`](SECURITY.md) for scan limits and outgoing-data details.
+
 ## Security model
 
 - **Untrusted content.** Stored `SKILL.md` text is source material, not instructions. The CLI scans sources for secrets
   and binaries during `review`, and agents are told to ask before installing anything.
-- **Local by default.** Local mode keeps the vault in a mode-600 file in a mode-700 directory and makes no network call
-  for search. The one opt-in exception is `headjack enrich` (see Suggestions), which sends skill text, scanned for secrets
-  first, to the AI Gateway.
+- **Local storage, optional Gateway calls.** Local mode keeps the vault in a mode-600 file in a mode-700 directory.
+  No-key full-text search and the local prompt hook stay offline. With a Gateway key and loadable sqlite-vec, local
+  search, manual suggest and calibration can send queries for embeddings; approved publishing and explicit
+  `headjack embed` can send skill text for Spanish enrichment and content/query embeddings, independently of
+  `enrich.enabled`. That setting gates `headjack enrich` and its post-import workflow, not all Gateway calls.
+  Local hybrid queries are secret-scanned before sending, with full-text fallback on a hit or embedding failure.
+  Publishing/backfill scan enrichment inputs and embedding texts, including generated queries; flagged text is not
+  sent to the next Gateway step. Scans detect known patterns, not every secret. See [`SECURITY.md`](SECURITY.md).
 - **Per-owner isolation on the instance.** Every table that holds catalog data has Postgres row-level security keyed to an
   owner id, and the app connects as a role without `BYPASSRLS`, so the policies always apply. Clerk sessions and
   resource-bound OAuth grants identify users; the MCP route accepts only grants with `skills:read`.

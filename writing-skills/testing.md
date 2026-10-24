@@ -23,8 +23,10 @@ The user's message: "<the request>"
 End with `ACTIONS:` listing every command you ran.
 ```
 
-For the suggestion form, run `headjack suggest "<the request>"` in the box and paste its output (the block and the
-line after it) after the user's message, as the prompt hook would.
+For the suggestion form, keep the original multilingual user request unchanged in the consumer agent's prompt.
+During preparation, run `headjack suggest "<agent-normalized English request>"` in the box, preserving literal
+technical identifiers, errors, tool and file names. Paste its output (the block and the line after it) after the
+user's message. This checks agent normalization, not automatic translation by a raw prompt hook.
 
 A GREEN agent that follows skill-finder stops to offer the skill. To test the install, start a fresh agent whose
 request already says yes ("Yes, install <slug> from my vault and use it to …"). A follow-up message from you is not

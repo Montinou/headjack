@@ -13,16 +13,23 @@ wrong, skill-finder finds it, it runs from the installed copy, and an agent that
 
 ## What search reads
 
-A local vault searches the `name` (weight 4), the `description` (3) and, from the body, each heading with the first
-paragraph under it (1). Nothing else in the body is searched, code blocks never are, and `review` stores no tags.
-English words are stemmed and a request's words are ORed. Search matches Spanish only through words in the skill;
-suggestions also use the text `headjack enrich` writes, or a small glossary. A hosted vault ranks on the name, tags
-and description (no body) plus meaning over the whole text; `vault-proof` tests local mode, so say so to a hosted
-user.
+Default local full-text search reads the `name` (weight 4), the `description` (3), stored tags (2) when present,
+and, from the body, each heading with the first paragraph under it (1); code blocks never enter that full-text index.
+English words are stemmed and request words are ORed. Keyed local hybrid retrieval also uses embeddings of stored chunks, with full-text
+fallback. A hosted vault combines name, tags and description full-text search with semantic retrieval.
+`vault-proof` tests local mode; report which retrieval configuration was exercised. `review` stores no tags:
+authoring tags does not automatically import them.
 
 ## Write it
 
 Make your own skill for two readers: the vault search that finds it and the agent that follows it.
+Write skills in English: description, headings, body, use cases, examples and tags where supported, regardless of
+the user's language. Preserve literal technical identifiers, errors, tool and file names, including
+`relation "users" does not exist`. Reply to the user in their language. Existing imported non-English skills need
+migration: report that need, never silently rewrite them.
+
+Agents formulate English search requests; the CLI expects English, not a translation or language-detection
+service. This is an agent authoring/search contract, not removal of runtime bilingual support.
 
 1. **One job.** Search the vault for it first: if a skill already covers it, change that skill instead.
 2. **`name`:** lowercase and hyphens, the slug people install. Use the words a request contains (`srt-subtitles`).
@@ -31,7 +38,9 @@ Make your own skill for two readers: the vault search that finds it and the agen
    steps follows the summary and skips the body.
 4. **No orders in the description.** skill-finder treats a description that tells the agent to run something as an
    injection: it warns the user and asks for a separate yes.
-5. **Under each heading, a first sentence with the request's words.** It is the only body text search sees.
+5. **Under each heading, a first sentence with the request's concrete English terms.** Name inputs, actions and
+   outcomes, and distinguish adjacent tasks outside scope; avoid keyword stuffing. This is the body text local
+   full-text search sees, not a limit on semantic retrieval.
 6. **Body: what the agent needs at the moment of use:** steps, exact commands, decision tables, the mistakes to
    avoid. Keep it near 500 words; long reference goes in a second file it links to.
 7. **Self-contained.** It installs as a link at `~/.claude/skills/<slug>/`. Link files relatively, run bundled
@@ -51,24 +60,29 @@ Prove a new or rewritten skill with agents and the vault, in this order.
    their pass lines. Run each with a fresh subagent without the skill. Record what it got wrong, did differently
    from run to run, or rebuilt from scratch (a helper script each time): that is what the skill teaches. If the runs
    show none of it, tell the user, with the runs, and ask whether the skill is still worth writing.
-2. **A requests file.** `+` lines: 5 or more ways people ask (one vague, one naming the tool, one in Spanish if the
-   user writes Spanish). `-` lines: 3 near misses that another skill should win. Write each as a full request:
-   suggestions skip anything under 25 characters, and `check` fails a skipped line.
+2. **A requests file.** Record agent-normalized English requests. `+` lines: 5 or more ways to ask (one vague,
+   one naming the tool), with concrete inputs, actions and expected outcomes. `-` lines: 3 English near misses
+   naming adjacent tasks that another skill should win. Preserve literal identifiers and errors. Write full requests:
+   suggestions skip anything under 25 characters, and `check` fails a skipped line. Keep multilingual user prompts
+   and their English-query mappings separately for the end-to-end agent check.
 3. **A scratch vault with the real catalog:** `vault-proof scratch "$(mktemp -d)/box" --copy-vault <skill-dir>`.
    It copies, read-only, the vault `HEADJACK_HOME` points at (default `~/.headjack`) and its `suggest.rule`. Pass: `<slug>: approved` and no
    flag you cannot justify. Only if it reports no local vault (a hosted-only machine), run it without `--copy-vault`
    and report that competition was not tested.
 4. **Search and suggest:** `vault-proof check <box> <slug> <requests-file>`. Pass: every line.
-   - A `+` miss: put its words into the name, description or a heading's first sentence, then rebuild the scratch
-     vault in a new folder and check again.
+   - A `+` miss: inspect the agent's English query, then clarify genuinely missing inputs, actions or outcomes in
+     the description or a heading's first sentence. Rebuild the scratch vault in a new folder and check again;
+     do not stuff keywords or broaden the skill to chase a hit.
    - A `-` hit: the skill is too broad or overlaps the winner. Narrow it, or merge the two.
-   - A Spanish miss: search needs the request's words in the skill; a suggestion can also come from `headjack
-     enrich`. Report which; enrichment is the user's opt-in, since it sends the skill's text to the AI Gateway.
+   - A multilingual miss: test agent normalization first; do not add Spanish words or require `headjack enrich`
+     to repair it. Existing bilingual retrieval remains supported; enrichment is separate user opt-in.
 5. **Install:** `source <box>/env.sh && headjack add <slug> --to claude --session`, then run what the skill tells
    an agent to run, from `~/.claude/skills/<slug>/`. Then `headjack remove <slug> --from claude --if-session`.
 6. **GREEN, end to end.** The RED requests again, with fresh subagents that have skill-finder loaded instead of your
-   skill, in two forms: the request alone, and the request followed by the suggestion block that
-   `headjack suggest "<request>"` prints in the box (what the user's prompt hook adds). Agents rarely search for a
+   skill. Include Spanish and another user language: grade actual English queries, unchanged literal identifiers
+   and replies in the user's language. Test two forms: the user request alone, and the request followed by the
+   suggestion block from `headjack suggest "<agent-normalized English request>"` in the box. This checks agent
+   normalization, not automatic translation by a raw prompt hook. Agents rarely search for a
    task they think they can do, so the block is usually what surfaces a skill: the suggestion form is the pass gate,
    and the request-alone form is reported, not tuned for. Each must offer yours, and a fresh agent whose request
    already says yes must install it, read it and get the task right. Grade the answer and

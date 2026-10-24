@@ -148,9 +148,14 @@ null version fields.
 The detail record also carries two enrichment fields (additive, not in the list rows):
 
 - `queries_es_text` (string): the current version's Spanish enrichment queries as stored, joined by a space; `""` when
-  the skill has none (no enrichment, or a failed one).
-- `enrichment_v` (integer or null): the `ENRICHMENT_VERSION` of the prompt that wrote `queries_es_text`; null when the
-  text is `""`. A local vault returns `""` and null for a skill that has no Spanish text yet; `headjack enrich` and `headjack pull` fill them.
+  the skill has none.
+- `enrichment_v` (integer or null): the recorded enrichment processing/prompt version. Hosted writers store
+  `ENRICHMENT_VERSION` for nonempty text and null for `""`. Local writers include `headjack enrich`, `headjack pull`,
+  approved publishing with a Gateway key and loadable sqlite-vec, and `headjack embed`. The latter two do not require
+  `enrich.enabled`. Local successful content-only embedding can record the current version with empty query text;
+  empty text therefore does not universally imply null. Nor does a recorded version prove all vectors are present:
+  text-only enrichment/pull and preserved enrichment after a failed backfill can retain version metadata without
+  complete vectors.
 
 ### GET /api/skills/{slug}/download
 

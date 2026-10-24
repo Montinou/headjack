@@ -14,8 +14,10 @@ for the command to give the user.
 ## Steps
 
 1. **Search, in English, with concrete nouns:** `headjack search "<tool or file type> <action>" --json`.
-   Translate other languages first. Search is keyword-based: "render video react mp4" finds what "turn my scene into a
-   movie" misses.
+   Normalize any user language to English; preserve literal technical identifiers, errors, tool/file names.
+   The CLI expects English; no translation/detection service. Even with hybrid retrieval, prefer concrete terms:
+   "render video react mp4". Reply in the user's language. Report imported non-English skills needing migration;
+   never silently rewrite them.
 2. **Judge each result by its description, not its rank.** Unrelated words match too. If nothing fits, search once or
    twice more with other terms (the tool's name, the file type, `--tag <tag>`).
 3. **Nothing at all came back?** Run `headjack whoami` before you say the vault has nothing. `0 skills` means the
