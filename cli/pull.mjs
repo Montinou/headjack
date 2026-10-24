@@ -5,7 +5,7 @@
 import { hashFiles } from '../lib/hash.mjs';
 import { unpack } from '../lib/tar.mjs';
 import { readSkillInfo, chunkSkill } from '../lib/skillmd.mjs';
-import { SLUG_RE } from '../lib/handlers.mjs';
+import { SLUG_RE, validateManifest } from '../lib/handlers.mjs';
 import { MAX_TARBALL_BYTES } from './api.mjs';
 
 const PAGE_SIZE = 100; // the largest page GET /api/skills serves
@@ -87,13 +87,16 @@ async function syncSpanish(local, slug, detail, localSkill) {
   if ((detail.enrichment_v ?? null) === null && localSkill.queries_es_text) return false;
   const [target] = await local.repo.listEnrichTargets({ slugs: [slug] });
   if (!target) throw new Error('the local skill has no current version');
-  await local.repo.setSpanish(target.id, target.version_id, detail.queries_es_text ?? '', detail.enrichment_v ?? null);
+  const written = await local.repo.setSpanish(target.id, target.version_id, detail.queries_es_text ?? '', detail.enrichment_v ?? null);
+  if (!written) throw new Error('Spanish synchronization failed');
   return true;
 }
 
 async function pullSkill({ hosted, local, slug, replace }) {
   const detail = await hosted.getSkill(slug);
   if (!detail) throw new Error('not found on the hosted vault');
+  // Null/absent hosted Spanish means no text; any supplied value must be a string before publish can write or embed.
+  if (typeof (detail.queries_es_text ?? '') !== 'string') throw new Error('hosted Spanish must be a string');
   if (typeof detail.sha256 !== 'string' || !detail.sha256) throw new Error('the hosted vault has no approved version');
   const record = await local.repo.getPull(slug);
   const localSkill = await local.repo.getSkill(slug);
@@ -144,23 +147,38 @@ async function pullSkill({ hosted, local, slug, replace }) {
   // A local import or review that landed since the check above wins: it is not replaced.
   if (((await local.repo.getSkill(slug))?.sha256 ?? null) !== localSha) return { skipped: editedLocally(slug) };
 
+  // Direct publish preserves hosted Spanish but bypasses the HTTP handler. Apply its entire validation contract
+  // before either publishing or re-pointing a stored version, including plugin identifiers and chunk limits.
+  const manifest = {
+    slug, name: info.name, description: info.description, kind: detail.kind, plugin_slug: detail.plugin_slug ?? null, tags,
+    source: PULL_SOURCE, source_path: detail.source_path ?? null, commit_sha: detail.commit_sha ?? null, sha256,
+    status: 'approved', review_notes: detail.review_notes ?? null,
+    scan_flags: Array.isArray(detail.scan_flags) ? detail.scan_flags : [], chunks,
+  };
+  const invalid = validateManifest(manifest);
+  if (invalid) throw new Error(invalid);
+
   let ids = null;
+  const queriesEs = detail.queries_es_text ?? '';
+  const enrichmentV = detail.enrichment_v ?? null;
   if (localSkill && (await local.repo.versionExists(slug, sha256))) {
     // The vault already holds that content as an older version (--replace, or hosted rolled back): make it current.
     ids = await local.repo.setCurrentVersion({
       slug, sha256, name: info.name, description: info.description, tags,
       chunks: chunks.map((text) => ({ text, kind: 'content' })),
+      queriesEs, enrichmentV, kind: detail.kind, plugin_slug: detail.plugin_slug ?? null,
     });
     if (!ids) throw new Error('the vault holds this content as a rejected version; it is not made current');
   } else {
-    ids = await local.api.publish({
-      slug, name: info.name, description: info.description, kind: detail.kind, plugin_slug: detail.plugin_slug ?? null, tags,
-      source: PULL_SOURCE, source_path: detail.source_path ?? null, commit_sha: detail.commit_sha ?? null, sha256,
-      status: 'approved', review_notes: detail.review_notes ?? null,
-      scan_flags: Array.isArray(detail.scan_flags) ? detail.scan_flags : [], chunks,
-    }, tarball);
+    // repo.publish is the local wrapper around publishCurrent. The HTTP handler would drop hosted Spanish.
+    ids = await local.repo.publish({
+      manifest, tarball, chunks, queriesEs, enrichmentV,
+    });
   }
-  await local.repo.setSpanish(ids.skillId, ids.versionId, detail.queries_es_text ?? '', detail.enrichment_v ?? null);
+  if (!(await local.repo.getSkill(slug))?.queries_es_text) {
+    const written = await local.repo.setSpanish(ids.skillId, ids.versionId, queriesEs, enrichmentV);
+    if (!written) throw new Error('Spanish synchronization failed');
+  }
   await local.repo.recordPull(slug, sha256);
   return { pulled: true };
 }
