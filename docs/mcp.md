@@ -143,8 +143,8 @@ about its text:
 | `review_notes` | the reviewer's notes |
 | `scan_flags` | what the review scan found: a list of `{ rule, severity, file, line }`, with `match` (up to 120 characters) for a text rule |
 | `update_available` | true when upstream moved |
-| `queries_es_text` | the Spanish search queries generated for the skill, joined by spaces; `''` when none (in local mode `''` until `headjack enrich` or `headjack pull` fills it) |
-| `enrichment_v` | the enrichment prompt version that produced `queries_es_text`, or null when there is none |
+| `queries_es_text` | stored Spanish example queries joined by spaces; `''` when none. Local writers include `headjack enrich`, `headjack pull`, approved keyed publishing and `headjack embed` |
+| `enrichment_v` | enrichment processing/prompt version, or null when unrecorded. Hosted writers use null for empty text; local successful content-only embedding can record the current version with empty text. This field alone does not prove vectors are complete |
 | `skill_md` | the start of the root `SKILL.md`, or null |
 | `truncated` | true when `skill_md` was cut |
 | `content_status` | `available` when `skill_md` holds the text, else `unavailable` |

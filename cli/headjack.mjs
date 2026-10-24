@@ -40,6 +40,7 @@ const USAGE = `headjack — personal skill vault
   headjack updates [--grandfathered]
   headjack import --dry-run | import [--interactive]
   headjack import --trim [--keep a,b] [--only-harness <id,…>] [--dry-run]
+  headjack embed
   headjack enrich [--stale] [<slug>…]
   headjack pull [--replace <slug>]…
   headjack verify
@@ -54,6 +55,14 @@ suggestion log, how many suggestions were taken (hit), left alone (ignored) or b
 --calibrate measures the suggestions against <state dir>/suggest/eval.json (rows of { q, slug | null, lang }, at least 20 per
 language including 8 with slug: null): precision, recall and latency per language with their raw counts, and 5-fold
 cross-validated thresholds printed as guidance. --mode picks the search (default: suggest.hosted). It never writes config.json.
+
+embed (local mode only; no flags or slugs) backfills current versions, independently of enrich.enabled. Requires an AI
+Gateway key in AI_GATEWAY_API_KEY or <state dir>/ai-gateway-key (mode 0600), and loadable sqlite-vec (HEADJACK_VEC_PATH
+can override its path). Sends scanned skill text for stale Spanish enrichment (openai/gpt-5-mini), then content/query
+chunks for embeddings (EMBED_MODEL, default openai/text-embedding-3-small). Reruns skip complete/current items; other
+skips include secret-scan hits. Prints examined/embedded/skipped/failed counts. Exits 2 for missing prerequisites or bad
+usage, 1 for per-item failures, 0 when none failed; a busy vault exits 3. With no vault, successful preflight yields
+all-zero counts and exit 0 without creating one. No force or dry-run option.
 
 enrich (local mode only) writes Spanish example requests for vault skills so Spanish prompts match them. It is opt-in: set
 "enrich": { "enabled": true } in <state dir>/config.json and give an AI Gateway key in AI_GATEWAY_API_KEY or in
@@ -488,6 +497,12 @@ async function main(argv) {
           await enrichAfterImport({ repo: ctx.repo, published: r.published, env: process.env, dir: ctx.dir, log: ctx.log });
         }
         return 0;
+      }
+      case 'embed': {
+        if (!isLocal()) throw new UserError('headjack embed only works on the local vault');
+        if (args.length || Object.keys(o).length) throw new UserError('usage: headjack embed');
+        const { embedCommand } = await import('./embed-backfill.mjs');
+        return local(() => embedCommand({ dir: ctx.dir, env: process.env, log: ctx.log }));
       }
       case 'enrich': {
         if (!isLocal()) throw new UserError('the server enriches hosted skills; headjack enrich only works on the local vault');

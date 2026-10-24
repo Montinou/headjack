@@ -483,10 +483,10 @@ test('skill-used: logs the skill name and never the arguments, and works with su
 
 // ---- the spawned process ----
 
-function runCli(args, { env, stdin = '' }) {
+function runCli(args, { env, stdin = '', nodeArgs = [] }) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const child = spawn('node', [CLI, ...args], { env: { PATH: process.env.PATH, ...env }, stdio: ['pipe', 'pipe', 'pipe'], timeout: 20000 });
+    const child = spawn('node', [...nodeArgs, CLI, ...args], { env: { PATH: process.env.PATH, ...env }, stdio: ['pipe', 'pipe', 'pipe'], timeout: 20000 });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
@@ -543,23 +543,95 @@ test('cli: the hook process exits within the deadline when the hosted server nev
   }
 });
 
-test('cli: the hook process exits within the deadline when the credential refresh is stuck', async () => {
-  const box = await sandbox();
-  const server = await blackhole();
-  try {
-    await hostedConfig(box.dir, { url: server.url, deadlineMs: { hosted: 300 } });
-    // An expired OAuth login: the bearer must refresh first, and the token endpoint never answers.
-    await fsp.writeFile(path.join(box.dir, 'token'), JSON.stringify({
-      kind: 'oauth', issuer: server.url, client_id: 'c', resource: `${server.url}/api`, email: 'a@b.c', access_token: 'old', refresh_token: 'r', expires_at: Date.now() - HOUR,
-    }), { mode: 0o600 });
-    const res = await runCli(['hook', 'prompt'], { env: { HOME: box.home, HEADJACK_HOME: box.dir }, stdin: payload() });
+const HOOK_BUDGET = 300;
+const STARTUP_ALLOWANCE = 1000;
+const DEADLINE_PRELOAD = fileURLToPath(new URL('../fixtures/hook-deadline-preload.mjs', import.meta.url));
+const ISSUER = 'http://127.0.0.1:1'; // Synthetic fetch only; no listener or external service.
+
+async function expiredLogin(box) {
+  await hostedConfig(box.dir, { url: ISSUER, deadlineMs: { hosted: HOOK_BUDGET } });
+  await fsp.writeFile(path.join(box.dir, 'token'), JSON.stringify({
+    kind: 'oauth', issuer: ISSUER, client_id: 'c', resource: `${ISSUER}/api`, email: 'a@b.c',
+    access_token: 'old', refresh_token: 'r', expires_at: Date.now() - HOUR,
+  }), { mode: 0o600 });
+}
+
+async function assertTimeoutState(box) {
+  const runs = (await readEvents(box.dir)).filter(e => e.type === 'run');
+  assert.deepEqual(runs.map(r => r.outcome), ['timeout']);
+  assert.deepEqual(runs[0].candidates, []);
+  const state = JSON.parse(await fsp.readFile(sessionFile(box), 'utf8'));
+  assert.deepEqual(state.slugs ?? [], [], 'nothing was remembered as suggested');
+  assert.equal(state.failures, 1, 'the deadline was recorded, not a quiet setup error');
+}
+
+for (const boundary of ['startup', 'discovery']) {
+  test(`cli: controlled ${boundary} expiry exits quietly within the hook bound`, async () => {
+    const box = await sandbox();
+    await expiredLogin(box);
+    const tokenBefore = await fsp.readFile(path.join(box.dir, 'token'), 'utf8');
+    const trace = path.join(box.home, 'deadline-trace.jsonl');
+    const res = await runCli(['hook', 'prompt'], {
+      nodeArgs: ['--import', DEADLINE_PRELOAD], stdin: payload(),
+      env: { HOME: box.home, HEADJACK_HOME: box.dir, HOOK_TEST_BOUNDARY: boundary,
+        HOOK_TEST_BUDGET: String(HOOK_BUDGET), HOOK_TEST_TRACE: trace },
+    });
     assert.deepEqual([res.code, res.stdout, res.stderr], [0, '', '']);
     assert.equal(res.signal, null);
-    assert.ok(server.seen.connections >= 1, 'the refresh reached the issuer');
-    assert.ok(res.ms < 300 + 1000, `took ${res.ms} ms (node startup included)`);
-  } finally {
-    server.close();
-  }
+    assert.ok(res.ms < HOOK_BUDGET + STARTUP_ALLOWANCE, `took ${res.ms} ms (node startup included)`);
+    const events = (await fsp.readFile(trace, 'utf8')).trim().split('\n').map(JSON.parse);
+    if (boundary === 'startup') {
+      assert.deepEqual(events.map(e => e.event), ['startup-exhausted', 'startup-deadline'], 'no discovery after startup expiry');
+      assert.ok(events[0].elapsed >= HOOK_BUDGET, 'real startup budget was already exhausted');
+      assert.equal(events[1].remaining, 0, 'the production origin includes startup time');
+    } else {
+      assert.deepEqual(events.map(e => e.event), ['request', 'request', 'expire']);
+      assert.deepEqual(events.slice(0, 2).map(e => [e.method, e.url]), [
+        ['GET', `${ISSUER}/.well-known/oauth-authorization-server`],
+        ['GET', `${ISSUER}/.well-known/openid-configuration`],
+      ], 'discovery began; this is not refresh POST coverage');
+      assert.equal(events[2].requests, 2);
+    }
+    await assertTimeoutState(box);
+    assert.equal(await fsp.readFile(path.join(box.dir, 'token'), 'utf8'), tokenBefore);
+    assert.equal(existsSync(path.join(box.dir, 'token.lock')), false);
+  });
+}
+
+test('prompt: controlled discovery expiry aborts the hosted caller after discovery starts', { timeout: HOOK_BUDGET + STARTUP_ALLOWANCE }, async (t) => {
+  const box = await sandbox();
+  await expiredLogin(box);
+  const { hostedSearch } = await import('../../lib/suggest-hosted.mjs');
+  const started = Promise.withResolvers();
+  const requests = [];
+  let signal;
+  let hostedSettled = false;
+  const hosted = Promise.withResolvers();
+  const fetchImpl = (url, init) => {
+    requests.push([init?.method ?? 'GET', String(url)]);
+    if (requests.length === 2) started.resolve();
+    return never();
+  };
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = hook('prompt', box, { adapters: { hostedSearch: args => {
+    signal = args.signal;
+    return hostedSearch({ ...args, fetchImpl }).finally(() => { hostedSettled = true; hosted.resolve(); });
+  } } });
+  await started.promise;
+  assert.equal(signal.aborted, false, 'the caller is live while discovery is pending');
+  assert.equal(hostedSettled, false);
+  assert.deepEqual(requests, [
+    ['GET', `${ISSUER}/.well-known/oauth-authorization-server`],
+    ['GET', `${ISSUER}/.well-known/openid-configuration`],
+  ]);
+  const expiredAt = performance.now();
+  t.mock.timers.tick(HOOK_BUDGET);
+  assert.equal(signal.aborted, true, 'the hook deadline must abort the hosted caller');
+  assert.deepEqual(await pending, { stdout: '' });
+  await hosted.promise;
+  assert.ok(performance.now() - expiredAt < STARTUP_ALLOWANCE, 'caller settles promptly after controlled expiry');
+  assert.equal(hostedSettled, true, 'searchPost cancellation settles without discovery completing');
+  await assertTimeoutState(box);
 });
 
 localTest('prompt local path with a Gateway key never fetches or enables/loads extensions', async () => {
