@@ -47,6 +47,35 @@ test('pack copies the closure and the by-path files', async () => {
   assert.deepEqual(written.filter((f) => /^(app|db|test)\//.test(f)), []);
 });
 
+// The marketplace installs the plugin from this package, so it must hold every path the plugin manifest uses: the
+// skill directories, the hooks file, each `${CLAUDE_PLUGIN_ROOT}/...` file a hook or MCP server runs (with the import
+// closure of a .mjs one), and the sqlite-vec loadables lib/local/vec.mjs looks for next to the CLI.
+test('pack holds everything the plugin manifest uses', async () => {
+  const out = path.join(await tempDir(), 'pkg');
+  const written = new Set((await packNpm(out)).files);
+  const plugin = await readJson('.claude-plugin/plugin.json');
+  const rel = (p) => path.posix.normalize(p.replace('${CLAUDE_PLUGIN_ROOT}/', ''));
+  const tree = async (dir) => (await walk(path.join(ROOT, dir))).map((f) => `${dir}/${f}`);
+
+  const needed = [];
+  for (const dir of plugin.skills.map(rel)) needed.push(...(await tree(dir)));
+  const hooksFile = rel(plugin.hooks);
+  needed.push(hooksFile);
+  const commands = Object.values(plugin.mcpServers).map((s) => s.command);
+  for (const groups of Object.values((await readJson(hooksFile)).hooks)) {
+    for (const g of groups) for (const h of g.hooks) commands.push(h.command);
+  }
+  for (const c of commands) {
+    for (const m of c.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\s]+)/g)) {
+      needed.push(m[1]);
+      if (m[1].endsWith('.mjs')) needed.push(...(await importGraph(m[1])).files);
+    }
+  }
+  needed.push(...(await tree('cli/vendor')));
+
+  assert.deepEqual(needed.filter((f) => !written.has(f)), [], 'paths the plugin uses that the package lacks');
+});
+
 test('pack refuses a non-empty output directory', async () => {
   const out = await makeDir({ 'stale.txt': 'x' });
   await assert.rejects(packNpm(out), /not empty/);
@@ -59,7 +88,10 @@ const fakeRoot = (extra) => makeDir({
   LICENSE: 'MIT',
   '.claude-plugin/plugin.json': '{"version":"0.0.0"}',
   'cli/headjack': { content: '#!/bin/sh\n', mode: 0o755 },
+  'cli/vendor/vec0.test.so': 'x',
   'skill-finder/SKILL.md': '# s',
+  'writing-skills/SKILL.md': '# w',
+  'plugin-hooks/hooks.json': '{"hooks":{}}',
   ...extra,
 });
 
