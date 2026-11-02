@@ -285,8 +285,8 @@ localTest('tag rows are query chunks with vectors and kind tags', async () => {
   const db = await openCopy(h.to);
   try {
     const entries = readSidecar(h.to).filter((e) => e.kind === 'tags');
-    // gamma has no tags and no plugin; every other skill has a tag row
-    assert.deepEqual(entries.map((e) => slugOf(db, e.skill_id)).sort(), ['alpha', 'beta', 'delta', 'epsilon']);
+    // every skill has a tag row, including gamma, which has no tags and no plugin
+    assert.deepEqual(entries.map((e) => slugOf(db, e.skill_id)).sort(), ['alpha', 'beta', 'delta', 'epsilon', 'gamma']);
     const texts = {};
     for (const entry of entries) {
       const row = chunkOf(db, entry.chunk_id);
@@ -297,10 +297,70 @@ localTest('tag rows are query chunks with vectors and kind tags', async () => {
     }
     assert.equal(texts.beta, 'beta: beta skill from its archive | tags: x, y');
     assert.equal(texts.delta, 'delta: delta description | tags: toolkit, other');
+    // an untagged, non-plugin skill: name: description with no tags suffix
+    assert.equal(texts.gamma, 'gamma: gamma description');
     // the Spanish query chunks of the backfill survive: nothing re-ran the backfill after the tag rows
     const ids = new Set(entries.map((e) => e.chunk_id));
     const spanish = db.prepare("select id, skill_id from chunks where kind = 'query'").all().filter((r) => !ids.has(r.id));
     assert.equal(new Set(spanish.map((r) => r.skill_id)).size, 5);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('an untagged, non-plugin skill gets a tag row, so hybrid-meta-tags can return it', async () => {
+  const h = await yesHarness();
+  await run(h.base);
+  const db = await openCopy(h.to);
+  try {
+    const sidecar = readSidecar(h.to);
+    const gamma = db.prepare("select id from skills where slug = 'gamma'").get().id;
+    const entry = sidecar.find((e) => e.skill_id === gamma && e.kind === 'tags');
+    assert.ok(entry, 'gamma has no tag row');
+    const row = chunkOf(db, entry.chunk_id);
+    assert.equal(row.kind, 'query');
+    assert.equal(row.text, 'gamma: gamma description');
+    assert.ok(!row.text.includes('tags:'));
+    assert.ok(embeddedIds(db).has(entry.chunk_id));
+    // the reader's hybrid-meta-tags allow-list holds a row for every skill
+    const lists = buildAllowLists({ db, sidecar, vecLoaded: true });
+    assert.equal(lists.lists['hybrid-meta-tags'].has(entry.chunk_id), true);
+    const tagSkills = new Set(sidecar.filter((e) => e.kind === 'tags').map((e) => e.skill_id));
+    const all = db.prepare('select id from skills where current_version_id is not null').all().map((r) => r.id);
+    assert.ok(all.every((id) => tagSkills.has(id)), 'a skill has no tag row');
+  } finally {
+    db.close();
+  }
+});
+
+localTest('a long description is cut before the tag suffix, so the tags survive within 1000 characters', async () => {
+  const long = 'x'.repeat(1500);
+  const h = await yesHarness([{ slug: 'wordy', description: long, kind: 'skill', tags: ['alpha-tag', 'beta-tag'], chunks: ['wordy one'] }]);
+  await run(h.base);
+  const db = await openCopy(h.to);
+  try {
+    const wordy = db.prepare("select id from skills where slug = 'wordy'").get().id;
+    const entry = readSidecar(h.to).find((e) => e.skill_id === wordy && e.kind === 'tags');
+    const text = chunkOf(db, entry.chunk_id).text;
+    assert.ok(text.length <= 1000, `length ${text.length}`);
+    assert.ok(text.endsWith(' | tags: alpha-tag, beta-tag'), text.slice(-60));
+    assert.ok(text.startsWith('wordy: xxx'));
+    // the frontmatter row keeps the plain cut at 1000
+    const front = readSidecar(h.to).find((e) => e.skill_id === wordy && e.kind === 'frontmatter');
+    assert.equal(chunkOf(db, front.chunk_id).text.length, 1000);
+  } finally {
+    db.close();
+  }
+});
+
+localTest('a long untagged description is cut at 1000 characters', async () => {
+  const h = await yesHarness([{ slug: 'wordy', description: 'y'.repeat(1500), kind: 'skill', tags: [], chunks: ['wordy one'] }]);
+  await run(h.base);
+  const db = await openCopy(h.to);
+  try {
+    const wordy = db.prepare("select id from skills where slug = 'wordy'").get().id;
+    const entry = readSidecar(h.to).find((e) => e.skill_id === wordy && e.kind === 'tags');
+    assert.equal(chunkOf(db, entry.chunk_id).text.length, 1000);
   } finally {
     db.close();
   }
@@ -348,7 +408,7 @@ localTest('a skill whose text trips the secret scan is skipped and reported', as
     assert.ok(readSidecar(h.to).every((e) => e.skill_id !== leaky));
     assert.equal(db.prepare("select count(*) as n from chunks where skill_id = ? and text like '%github_pat_%'").get(leaky).n, 0);
     // the other skills are unaffected
-    assert.equal(readSidecar(h.to).filter((e) => e.kind === 'tags').length, 4);
+    assert.equal(readSidecar(h.to).filter((e) => e.kind === 'tags').length, 5);
   } finally {
     db.close();
   }
@@ -390,6 +450,6 @@ localTest('the dry run also counts the frontmatter and tag texts a --yes run wou
   const result = await run({ ...h.base, yes: false });
   assert.equal(h.calls.length, 0);
   assert.equal(result.frontmatterTexts, 4);
-  assert.equal(result.tagTexts, 4);
-  assert.ok(h.logs.some((line) => /4 frontmatter/.test(line) && /4 tag/.test(line)), h.logs.join('\n'));
+  assert.equal(result.tagTexts, 5);
+  assert.ok(h.logs.some((line) => /4 frontmatter/.test(line) && /5 tag/.test(line)), h.logs.join('\n'));
 });

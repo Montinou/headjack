@@ -5,10 +5,12 @@
 // With --yes (consent to send skill text to the AI Gateway; the key is AI_GATEWAY_API_KEY, no key file is read) it also
 // embeds on the copy, in this order and never on the source: (1) the regular backfill of the copy, run once;
 // (2) a `name: description` content chunk for each skill whose current version has none, recorded as kind "frontmatter";
-// (3) one `name: description | tags: a, b` query chunk per skill that has tags (a plugin skill always carries the tag
-// derived from its plugin_slug in this text only, never stored on the skill), recorded as kind "tags"; (4) the sidecar
+// (3) one `name: description | tags: a, b` query chunk per skill (a plugin skill always carries the tag derived from its
+// plugin_slug in this text only, never stored on the skill; a skill with no tags and no plugin gets `name: description`
+// alone), recorded as kind "tags"; (4) the sidecar
 // <to>/eval-tag-chunks.json that lib/suggest-eval-chunks.mjs reads. Texts that trip the secret scan are skipped and
-// reported by skill slug and rule; chunk text is cut at 1000 characters. The backfill is never rerun after step (3):
+// reported by skill slug and rule; chunk text is cut at 1000 characters (in a tag text the `name: description` part is
+// cut first, so the tag list always survives). The backfill is never rerun after step (3):
 // it replaces a skill's query chunks and would drop the tag rows.
 // --from is only ever opened read-only and may sit inside the default state directory (HEADJACK_HOME, else
 // ~/.headjack). --to must not: the script exits 2 when it resolves (real paths) inside that directory, or when
@@ -90,9 +92,20 @@ function tagList(skill) {
   return tags;
 }
 
+// The tag text of a skill: `name: description | tags: a, b`, or `name: description` when the skill has no tags. At most
+// MAX_LEN characters; the `name: description` part is cut so the tag suffix fits whole. Only when the suffix alone is
+// longer than MAX_LEN is the whole text cut.
+function tagText(skill, list) {
+  const base = `${skill.name}: ${skill.description}`;
+  if (!list.length) return base.slice(0, MAX_LEN);
+  const suffix = ` | tags: ${list.join(', ')}`;
+  if (suffix.length > MAX_LEN) return `${base}${suffix}`.slice(0, MAX_LEN);
+  return `${base.slice(0, MAX_LEN - suffix.length)}${suffix}`;
+}
+
 // The texts steps (2) and (3) would add, from the current state of the vault: a frontmatter text for each skill whose
 // current version has no content chunk equal to the text the reader expects (see expectedFrontmatter), and a tag text for
-// each skill with a tag list. Vectors are not read, so no sqlite extension is needed.
+// every skill (the tag row replaces the plain frontmatter chunk in hybrid-meta-tags, so no skill may lack one). Vectors are not read, so no sqlite extension is needed.
 function planTexts(db) {
   const skills = db.prepare(
     `select s.id, s.slug, s.name, s.description, s.plugin_slug, s.tags, s.current_version_id as version_id, v.tarball
@@ -106,8 +119,7 @@ function planTexts(db) {
     const expected = expectedFrontmatter(skill, skill.tarball ?? null);
     const has = expected !== null && contentOf.all(skill.id, skill.version_id).some((chunk) => chunk.text === expected);
     if (!has) frontmatter.push({ ...ref, kind: 'frontmatter', text: `${skill.name}: ${skill.description}`.slice(0, MAX_LEN) });
-    const list = tagList(skill);
-    if (list.length) tags.push({ ...ref, kind: 'tags', text: `${skill.name}: ${skill.description} | tags: ${list.join(', ')}`.slice(0, MAX_LEN) });
+    tags.push({ ...ref, kind: 'tags', text: tagText(skill, tagList(skill)) });
   }
   return { frontmatter, tags };
 }
