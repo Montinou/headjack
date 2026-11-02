@@ -389,6 +389,88 @@ test('calibrate in hosted mode reproduces the pipeline\'s own suggestions with t
   for (const r of report.rows) assert.deepEqual(r.suggested, suggestedSlugs(r.record, 'hosted', cfg.suggest.rule, cfg.suggest.maxSuggestions));
 });
 
+// A candidate both decision rules can read: the local gap table (passes localMinGap) and the hosted ranks (fail minSimilarity).
+const bothWays = (slug) => ({
+  slug, name: slug, description: 'x', kind: 'skill', review: 'approved',
+  table_rank: 1, bm25_gap: 10, matched_terms: 3, fts_rank: 1, vector_rank: 1, similarity: 0.1,
+});
+
+test('a rank-sim run searches locally and makes no hosted request', async () => {
+  const rs = evalRows();
+  const key = answerKey(rs);
+  const modes = [];
+  const sessions = [];
+  const report = await calibrate({
+    rows: rs, mode: 'local', decisionMode: 'hosted', config: await config({ hosted: true }), cwd: '/nowhere', home: '/nowhere',
+    depsFor: (sessionId) => { sessions.push(sessionId); return depsFor(async (q, searchMode) => {
+      modes.push(searchMode);
+      assert.notEqual(searchMode, 'hosted', 'a hosted search was requested');
+      return { candidates: key.get(q).slug ? [bothWays(key.get(q).slug)] : [], variant: 'local' };
+    })(); },
+  });
+  assert.equal(modes.length, rs.length);
+  assert.ok(modes.every((m) => m === 'local'));
+  assert.ok(sessions.every((s) => s === undefined), 'local rows carry no session id');
+  assert.equal(report.mode, 'local');
+  assert.equal(report.decisionMode, 'hosted');
+});
+
+test('the rule-in-use line follows the decision mode and differs from gap on a fixture where the rules disagree', async () => {
+  const rs = evalRows();
+  const key = answerKey(rs);
+  const run = async (decisionMode) => calibrate({
+    rows: rs, mode: 'local', decisionMode, config: await config(), cwd: '/nowhere', home: '/nowhere',
+    depsFor: depsFor(async (q) => ({ candidates: key.get(q).slug ? [bothWays(key.get(q).slug)] : [], variant: 'local' })),
+  });
+  const gap = await run('local');
+  const rankSim = await run('hosted');
+  const ruleLine = (r) => formatCalibration(r).split('\n').find((l) => l.startsWith('rule in use'));
+  assert.match(ruleLine(gap), /localMinGap 5\.5, localMinGapEs 2\.5/);
+  assert.match(ruleLine(rankSim), /maxRanks 2, minSimilarity 0\.45/);
+  assert.doesNotMatch(ruleLine(rankSim), /localMinGap/);
+  // The gap rule accepts every candidate; the rank-sim rule rejects them all (similarity 0.1 < 0.45).
+  assert.deepEqual(gap.current.en.recall, { pct: 100, n: 12, d: 12 });
+  assert.deepEqual(rankSim.current.en.recall, { pct: 0, n: 0, d: 12 });
+  assert.deepEqual(rankSim.current.en.precision, { pct: null, n: 0, d: 0 });
+  assert.equal(rankSim.rule.minSimilarity, 0.45);
+  // Cross-validation decides in the decision mode too: the recommendation carries the rank-sim thresholds.
+  assert.ok(Object.hasOwn(rankSim.cv.recommended.en, 'minSimilarity'));
+  assert.match(formatCalibration(rankSim), /recommended thresholds[^\n]*\n {2}en: maxRanks \d, minSimilarity [\d.]+/);
+  // `current` is the offline recompute, not what the search run suggested.
+  assert.ok(rankSim.rows.some((r) => r.suggested.length > 0), 'the search run itself suggested under the gap rule');
+});
+
+test('a default run (no decisionMode) keeps today\'s per-language metrics, counts and recommended thresholds; only decisionMode is added', async () => {
+  const rs = evalRows();
+  const key = answerKey(rs);
+  const make = async (extra) => calibrate({
+    rows: rs, mode: 'local', ...extra, config: await config(), cwd: '/nowhere', home: '/nowhere',
+    depsFor: depsFor(async (q) => {
+      const row = key.get(q);
+      const slug = row.slug ?? (row.i % 3 === 0 ? 'junk' : null);
+      return { candidates: slug ? [{ slug, name: slug, description: 'x', kind: 'skill', review: 'approved', table_rank: 1, bm25_gap: 1 + (row.i % 7), matched_terms: 3 }] : [], variant: 'local' };
+    }),
+  });
+  const dflt = await make({});
+  assert.equal(dflt.decisionMode, 'local');
+  assert.deepEqual(Object.keys(dflt).sort(), ['current', 'cv', 'decisionMode', 'folds', 'max', 'mode', 'rows', 'rule', 'seed', 'skipped']);
+  // Today's `current` was the metrics of what the search run suggested.
+  assert.deepEqual(dflt.current, metrics(dflt.rows));
+  assert.equal(dflt.skipped, 0);
+  assert.equal(dflt.rows.length, rs.length);
+  const explicit = await make({ decisionMode: 'local' });
+  // Wall-clock latency differs between two runs; everything else is the same.
+  const counts = (r) => Object.fromEntries(Object.entries(r.current).map(([lang, m]) => [lang, [m.precision, m.recall]]));
+  assert.deepEqual(counts(explicit), counts(dflt));
+  assert.deepEqual(explicit.cv.recommended, dflt.cv.recommended);
+  assert.deepEqual(explicit.rule, dflt.rule);
+  assert.equal(explicit.decisionMode, dflt.decisionMode);
+  assert.ok(Object.hasOwn(dflt.cv.recommended.en, 'localMinGap'));
+  const text = formatCalibration(dflt);
+  assert.match(text, /^calibration \(local mode\): 40 rows searched once each$/m);
+  assert.match(text, /^rule in use: localMinGap 5\.5, localMinGapEs 2\.5, up to 2 suggestions$/m);
+});
+
 test('the training line says it is pooled over the folds', async () => {
   const rs = evalRows();
   const key = answerKey(rs);

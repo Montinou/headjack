@@ -300,8 +300,9 @@ same skill twice (session state is kept for 24 hours).
 `--explain` for why each candidate was or was not offered, `--session-id <id>` to count it against a session). It prints
 nothing when local mode finds no vault.
 
-The local prompt hook stays offline. Manual local `suggest` and local calibration can send the prepared query to the
-AI Gateway for embeddings when a key and loadable sqlite-vec are available; they add hybrid diagnostics and vector
+The local prompt hook stays offline. Manual local `suggest` and local calibration with a hybrid `--retrieval` can send the
+prepared query to the AI Gateway for embeddings when a key and loadable sqlite-vec are available (the default `fts`
+calibration never does); they add hybrid diagnostics and vector
 neighbors but still use lexical signals to decide what to suggest. Without a key, or when vec is unavailable, the query
 is secret-flagged or embedding fails, retrieval falls back to full text. The mode follows `suggest.hosted` only,
 whatever `HEADJACK_MODE` says.
@@ -340,7 +341,7 @@ Three commands help you tune these settings:
 ```sh
 headjack suggest --report [--since 7d]       # suggestions taken, ignored, or beaten by a skill you added anyway
 echo "render my remotion video to mp4" | headjack suggest --save --expect remotion-render   # save a test prompt
-headjack suggest --calibrate [--mode local|hosted]   # precision and recall per language against eval.json
+headjack suggest --calibrate [--mode local|hosted] [--retrieval fts,hybrid,hybrid-meta,hybrid-meta-tags] [--rule gap,rank-sim]   # precision and recall per language against eval.json
 ```
 
 `--save` appends a `{ q, slug, lang, at }` row to `<state dir>/suggest/cases.jsonl` (`--expect none` for a prompt that
@@ -349,6 +350,19 @@ command line, so the prompt stays out of shell history). It is the only file tha
 `<state dir>/suggest/eval.json`, a JSON array of `{ q, slug, lang }` rows you build from those cases: at least 20 rows
 per language, 8 of them with `slug: null`. It prints precision, recall and latency per language and cross-validated
 thresholds as guidance, and never changes `config.json`.
+
+With `--mode local`, `--retrieval` (default `fts`) and `--rule` (default `gap`) take comma-separated lists, and the run
+prints one block per retrieval x rule pair, with the sha256 of `eval.json`, the seed (17), the folds (5), the chunk count,
+how many rows fell back to full text, and whether the pair is valid. `fts` searches full text only and never embeds.
+`hybrid`, `hybrid-meta` and `hybrid-meta-tags` also embed each prompt once, however many pairs use it (after the secret
+scan; the key comes from `AI_GATEWAY_API_KEY` only), and restrict the vector neighbours to an allow-list of chunks: all of
+them, the skills' frontmatter chunks, or the tag rows listed in `<state dir>/eval-tag-chunks.json`. `gap` decides with the
+local rule and `rank-sim` with the hosted rank-and-similarity rule, both applied offline, so no hosted request is made.
+A pair that cannot be measured is printed with its reason and not scored: `vec-unavailable`, `no-key`, `secret` or
+`embed-failed` (more than 5% of rows fell back), `chunk-count-above-4096`, `no-sidecar`, `stale-sidecar`,
+`invalid-sidecar`, or `frontmatter-missing-above-5-percent`. `fts` x `rank-sim` is valid but offers nothing by
+construction, since full-text candidates carry no vector signals. `--retrieval` and `--rule` need `--mode local`; an
+unknown value exits 2.
 
 #### Spanish enrichment (opt-in)
 
