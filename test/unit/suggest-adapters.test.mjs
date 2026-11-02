@@ -12,6 +12,12 @@ import { MIGRATIONS, openVault, vaultFile } from '../../lib/local/schema.mjs';
 import { createSqliteRepo } from '../../lib/local/sqlite-repo.mjs';
 import { hostedSearch } from '../../lib/suggest-hosted.mjs';
 import { localSearch } from '../../lib/suggest-local.mjs';
+import { searchHybrid } from '../../lib/local/hybrid.mjs';
+import { loadVec } from '../../lib/local/vec.mjs';
+import { rankSkills } from '../../lib/search.mjs';
+import { loadSuggestConfig } from '../../lib/suggest-config.mjs';
+import { searchRows } from '../../lib/suggest-calibrate.mjs';
+import { suggestDeps } from '../../cli/suggest-deps.mjs';
 
 const URL_ = 'https://headjack.example.invalid';
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -218,7 +224,7 @@ localTest('localSearch returns the signals of the current vault, variant local',
   assert.deepEqual(out.candidates.map((c) => c.slug), ['deploy-cron']);
   assert.equal(out.candidates[0].table_rank, 1);
   assert.equal(out.candidates[0].review, 'approved');
-  assert.deepEqual(await localSearch({ dir, query: 'a ! ?', migrate: false }), { candidates: [], variant: 'local' });
+  assert.deepEqual(await localSearch({ dir, query: 'a ! ?', migrate: false }), { candidates: [], variant: 'local', fallback: null });
 });
 
 localTest('localSearch ranks the Spanish example requests first for a Spanish query, and searches only the English text otherwise', async () => {
@@ -325,4 +331,227 @@ localTest('localSearch matches a Spanish prompt through example requests and, fa
   assert.deepEqual(gloss.candidates.map((c) => [c.slug, c.fts_table]), [['deploy-cron', 'en-gloss']]);
   // An English prompt never reaches the glossary table.
   assert.deepEqual((await localSearch({ dir, query: 'desplegar', migrate: false })).candidates, []);
+});
+
+// ---- embedder, allow-list and fallback plumbing ----
+
+const vector = (x = 1, y = 0) => [x, y, ...Array(1534).fill(0)];
+const QUERY = 'deploy recurring cron jobs';
+
+// A writable vault whose chunks carry vectors: skill 1 (cron-top) matches the query text and sits on chunk 1, skill 2
+// (vector-neighbor) matches only by vector and sits on chunk 2.
+async function vecVault() {
+  const { DatabaseSync } = await runtimeCheck();
+  const dir = await tempDir('sv-plumbing-');
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  assert.equal(loadVec(db), true, 'vendored sqlite-vec must load');
+  for (const [id, slug, body, embedding] of [
+    [1, 'cron-top', 'deploy recurring cron jobs', vector(0, 1)],
+    [2, 'vector-neighbor', 'garden tomatoes', vector()],
+  ]) {
+    db.prepare('insert into skills (id, slug, name, description, kind, tags) values (?, ?, ?, ?, ?, ?)').run(id, slug, slug, body, 'skill', '[]');
+    db.prepare("insert into versions (id, skill_id, sha256, status, reviewed_at, review_notes) values (?, ?, ?, 'approved', '2020-01-01', 'ok')").run(id, id, `plumb${id}`);
+    db.prepare('update skills set current_version_id = ? where id = ?').run(id, id);
+    db.prepare("insert into skill_docs (rowid, name, description, tags, body) values (?, '', '', '', ?)").run(id, body);
+    db.prepare('insert into chunk_vecs (rowid, embedding, skill_id, version_id) values (?, ?, ?, ?)').run(BigInt(id), JSON.stringify(embedding), BigInt(id), BigInt(id));
+  }
+  db.close();
+  return dir;
+}
+
+// Silences the fixed diagnostics the hybrid path prints, and restores console.error and HEADJACK_VEC_PATH afterwards.
+function quiet(t, vecPath) {
+  const saved = { error: console.error, vec: process.env.HEADJACK_VEC_PATH };
+  console.error = () => {};
+  if (vecPath !== undefined) process.env.HEADJACK_VEC_PATH = vecPath;
+  t.after(() => {
+    console.error = saved.error;
+    if (saved.vec === undefined) delete process.env.HEADJACK_VEC_PATH; else process.env.HEADJACK_VEC_PATH = saved.vec;
+  });
+}
+
+localTest('a given embed and chunkIds reach searchVector', async (t) => {
+  quiet(t);
+  const dir = await vecVault();
+  // End to end through localSearch: the given embed stands in for the key (none exists), the allow-list drops chunk 1.
+  const texts = [];
+  const embed = async (input) => { texts.push(input); return [vector()]; };
+  const out = await localSearch({ dir, query: QUERY, hybrid: true, env: {}, embed, searchOptions: { chunkIds: new Set([2]) }, fetchImpl: () => assert.fail('must not fetch') });
+  assert.deepEqual(texts, [[QUERY]]);
+  assert.equal(out.fallback, null);
+  const bySlug = new Map(out.candidates.map((c) => [c.slug, c]));
+  assert.equal(bySlug.get('cron-top').vector_rank, null);
+  assert.equal(bySlug.get('vector-neighbor').vector_rank, 1);
+  // The same query without the allow-list ranks both chunks.
+  const open = await localSearch({ dir, query: QUERY, hybrid: true, env: {}, embed });
+  assert.notEqual(new Map(open.candidates.map((c) => [c.slug, c])).get('cron-top').vector_rank, null);
+  // The arguments the repo sees: the vector, the candidate pool, the tags, then the options object itself.
+  const { DatabaseSync } = await runtimeCheck();
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  try {
+    const calls = [];
+    const real = createSqliteRepo(db);
+    const repo = { ...real, searchVector: async (...args) => { calls.push(args); return real.searchVector(...args); } };
+    const searchOptions = { chunkIds: new Set([1]) };
+    await searchHybrid({ db, repo, query: QUERY, embed, limit: 5, tags: [], searchOptions });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].slice(0, 3), [vector(), 50, []]);
+    assert.equal(calls[0][3], searchOptions);
+  } finally { db.close(); }
+});
+
+test('rankSkills hands searchOptions to searchVector as the fourth argument', async () => {
+  const calls = [];
+  const repo = {
+    searchVector: async (...args) => { calls.push(args); return []; },
+    searchText: async () => [],
+    getSkillsByIds: async () => [],
+  };
+  const searchOptions = { chunkIds: new Set([7]) };
+  await rankSkills({ repo, embed: async () => [vector()], query: QUERY, tags: ['t'], k: 5, searchOptions });
+  assert.equal(calls[0].length, 4);
+  assert.equal(calls[0][3], searchOptions);
+  calls.length = 0;
+  await rankSkills({ repo, embed: async () => [vector()], query: QUERY, tags: ['t'], k: 5 });
+  assert.equal(calls[0][3], undefined);
+});
+
+localTest('a missing vec library gives fallback vec-unavailable on the searchRows row', async (t) => {
+  const dir = await vecVault();
+  quiet(t, '/no-such-headjack-vec'); // after the fixture: building it needs the real extension
+  const base = await loadSuggestConfig(await tempDir('sv-plumbing-cfg-'));
+  const config = { ...base, suggest: { ...base.suggest, enabled: true } };
+  const ctx = { env: {}, dir, home: dir, cwd: dir };
+  const embed = async () => assert.fail('must not embed without the extension');
+  const out = await searchRows([{ q: QUERY, slug: 'cron-top', lang: 'en' }], {
+    mode: 'local', config, cwd: dir, home: dir, depsFor: () => suggestDeps({ ctx, config, hybrid: true, embed, searchOptions: {} }),
+  });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].fallback, 'vec-unavailable');
+  assert.equal(out[0].record.candidates[0].slug, 'cron-top');
+});
+
+localTest('a searchVector throw gives vec-unavailable and busy still rethrows', async (t) => {
+  quiet(t);
+  const dir = await vecVault();
+  const { DatabaseSync } = await runtimeCheck();
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  try {
+    const real = createSqliteRepo(db);
+    const reasons = [];
+    const broken = { ...real, searchVector: async () => { throw new Error('vector query unavailable'); } };
+    const rows = await searchHybrid({ db, repo: broken, query: QUERY, embed: async () => [vector()], limit: 5, tags: [], onFallback: (r) => reasons.push(r) });
+    assert.equal(Array.isArray(rows), true);
+    assert.equal(rows[0].slug, 'cron-top');
+    assert.equal(rows[0].vector_rank, null);
+    assert.deepEqual(reasons, ['vec-unavailable']);
+    for (const errcode of [5, 11]) {
+      const error = Object.assign(new Error('database failure'), { code: 'ERR_SQLITE_ERROR', errcode });
+      const seen = [];
+      const repo = { ...real, searchVector: async () => { throw error; } };
+      await assert.rejects(searchHybrid({ db, repo, query: QUERY, embed: async () => [vector()], limit: 5, tags: [], onFallback: (r) => seen.push(r) }), (e) => e === error);
+      assert.deepEqual(seen, []);
+    }
+  } finally { db.close(); }
+});
+
+localTest('a secret in the query gives fallback secret and full-text candidates', async (t) => {
+  quiet(t);
+  const dir = await vecVault();
+  const secret = 'ghp_' + 'A'.repeat(36); // synthetic, never a usable credential
+  let embedded = 0;
+  const out = await localSearch({ dir, query: `${QUERY} ${secret}`, hybrid: true, env: {}, embed: async () => { embedded += 1; return [vector()]; } });
+  assert.equal(embedded, 0);
+  assert.equal(out.fallback, 'secret');
+  assert.equal(out.variant, 'local');
+  assert.equal(out.candidates[0].slug, 'cron-top');
+  assert.equal(out.candidates[0].vector_rank, null);
+  assert.equal(out.candidates[0].similarity, null);
+});
+
+localTest('an embed failure gives embed-failed', async (t) => {
+  quiet(t);
+  const dir = await vecVault();
+  const out = await localSearch({ dir, query: QUERY, hybrid: true, env: {}, embed: async () => { throw new Error('private query'); } });
+  assert.equal(out.fallback, 'embed-failed');
+  assert.equal(out.candidates[0].slug, 'cron-top');
+  assert.equal(out.candidates[0].vector_rank, null);
+});
+
+localTest('no key and no embed gives no-key when hybrid is true', async (t) => {
+  quiet(t);
+  const dir = await vecVault();
+  const out = await localSearch({ dir, query: QUERY, hybrid: true, env: {}, fetchImpl: () => assert.fail('must not fetch') });
+  assert.equal(out.fallback, 'no-key');
+  assert.equal(out.candidates[0].slug, 'cron-top');
+  assert.equal(out.candidates[0].vector_rank, null);
+  // A call carrying searchOptions never looks up a key itself, even when one exists.
+  let fetched = 0;
+  const keyed = await localSearch({
+    dir, query: QUERY, hybrid: true, env: { AI_GATEWAY_API_KEY: 'test-fixture' }, searchOptions: {},
+    fetchImpl: async () => { fetched += 1; return Response.json({}); },
+  });
+  assert.equal(keyed.fallback, 'no-key');
+  assert.equal(fetched, 0);
+});
+
+localTest('hybrid false never reports a fallback, with or without a key', async (t) => {
+  quiet(t);
+  const dir = await vecVault();
+  for (const env of [{}, { AI_GATEWAY_API_KEY: 'test-fixture' }]) {
+    const out = await localSearch({
+      dir, query: QUERY, hybrid: false, env, embed: async () => assert.fail('must not embed'), fetchImpl: () => assert.fail('must not fetch'),
+    });
+    assert.equal(out.fallback, null);
+    assert.equal(out.variant, 'local');
+    assert.equal(out.candidates[0].slug, 'cron-top');
+  }
+  assert.equal((await localSearch({ dir, query: QUERY })).fallback, null);
+});
+
+localTest('onFallback is called at most once per search', async (t) => {
+  quiet(t);
+  const dir = await vecVault();
+  const { DatabaseSync } = await runtimeCheck();
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  try {
+    const repo = createSqliteRepo(db);
+    const reasons = [];
+    const onFallback = (r) => reasons.push(r);
+    // A secret ends in full text once; an embed failure once; a searchVector throw (called twice by one search) once.
+    await searchHybrid({ db, repo, query: `${QUERY} ghp_${'A'.repeat(36)}`, embed: async () => [vector()], limit: 5, tags: [], onFallback });
+    assert.deepEqual(reasons.splice(0), ['secret']);
+    await searchHybrid({ db, repo, query: QUERY, embed: async () => { throw new Error('x'); }, limit: 5, tags: [], onFallback });
+    assert.deepEqual(reasons.splice(0), ['embed-failed']);
+    let thrown = 0;
+    const broken = { ...repo, searchVector: async () => { thrown += 1; throw new Error('vector query unavailable'); } };
+    // Two reads of the vector branch in one search, as a caller that retries through the same wrapper would make.
+    await searchHybrid({
+      db, repo: broken, query: QUERY, embed: async () => [vector()], limit: 5, tags: [], onFallback,
+      readSnapshot: async (read) => { await read(); return read(); },
+    });
+    assert.equal(thrown, 2);
+    assert.deepEqual(reasons.splice(0), ['vec-unavailable']);
+  } finally { db.close(); }
+});
+
+localTest('searchHybrid called without a callback returns the same array as before', async (t) => {
+  quiet(t);
+  const dir = await vecVault();
+  const { DatabaseSync } = await runtimeCheck();
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  try {
+    const repo = createSqliteRepo(db);
+    const embed = async () => [vector()];
+    const plain = await searchHybrid({ db, repo, query: QUERY, embed, limit: 5, tags: [] });
+    assert.equal(Array.isArray(plain), true);
+    const withCallback = await searchHybrid({ db, repo, query: QUERY, embed, limit: 5, tags: [], searchOptions: undefined, onFallback: () => {} });
+    assert.deepEqual(withCallback, plain);
+    assert.deepEqual(plain.map((r) => r.slug).sort(), ['cron-top', 'vector-neighbor']);
+    // Every fallback path still returns an array with no callback.
+    for (const failing of [async () => { throw new Error('x'); }, undefined]) {
+      assert.equal(Array.isArray(await searchHybrid({ db, repo, query: QUERY, embed: failing, limit: 5, tags: [] })), true);
+    }
+    assert.equal(Array.isArray(await searchHybrid({ db, repo, query: `${QUERY} ghp_${'A'.repeat(36)}`, embed, limit: 5, tags: [] })), true);
+  } finally { db.close(); }
 });

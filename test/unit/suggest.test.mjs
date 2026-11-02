@@ -223,10 +223,11 @@ test('the search receives the prepared query and the mode from suggest.hosted', 
   assert.equal(r.mode, 'hosted');
 });
 
-test('result shape: outcome, mode, variant, suggestions, candidates, latency, lang, active_keys', async () => {
+test('result shape: outcome, mode, variant, suggestions, candidates, latency, lang, active_keys, fallback', async () => {
   const { r } = await run({}, { candidates: [local('flags')], active: keysOf({ state: ['other'], enabled: { 'p@m': true, 'q@m': false }, dirs: ['d1'] }) });
-  assert.deepEqual(Object.keys(r).sort(), ['active_keys', 'candidates', 'lang_guess', 'latency_ms', 'mode', 'outcome', 'suggestions', 'variant']);
+  assert.deepEqual(Object.keys(r).sort(), ['active_keys', 'candidates', 'fallback', 'lang_guess', 'latency_ms', 'mode', 'outcome', 'suggestions', 'variant']);
   assert.equal(r.outcome, 'suggested');
+  assert.equal(r.fallback, null);
   assert.equal(r.variant, 'local');
   assert.equal(r.lang_guess, 'en');
   assert.ok(Number.isInteger(r.latency_ms) && r.latency_ms >= 0);
