@@ -154,3 +154,86 @@ localTest('vendored sqlite-vec ranks the cosine-nearer 1536-float row first', as
     db.close();
   }
 });
+
+// Two published skills with injected vectors. Skill 1 owns chunk 1 (query axis) and chunk 2 (other axis);
+// skill 2 owns chunk 3 (a third axis). Querying axis(0): chunk 1 has similarity 1, chunks 2 and 3 have 0.
+async function vectorVault(prefix) {
+  const previous = process.env.HEADJACK_VEC_PATH;
+  delete process.env.HEADJACK_VEC_PATH;
+  const dir = await tempDir(prefix);
+  const db = openVault({ dir, DatabaseSync, allowExtension: true });
+  const restore = () => {
+    if (previous === undefined) delete process.env.HEADJACK_VEC_PATH;
+    else process.env.HEADJACK_VEC_PATH = previous;
+  };
+  try {
+    for (const [id, slug] of [[1, 'alpha'], [2, 'beta']]) {
+      db.exec(`insert into skills (slug, name, description, kind) values ('${slug}', '${slug}', 'fixture', 'skill')`);
+      db.exec(`insert into versions (skill_id, sha256, status, reviewed_at) values (${id}, '${String(id).repeat(64)}', 'approved', '2020-01-01T00:00:00Z')`);
+      db.exec(`update skills set current_version_id = ${id} where id = ${id}`);
+    }
+    assert.equal(loadVec(db), true);
+    const insert = db.prepare('insert into chunk_vecs(rowid, embedding, skill_id, version_id) values (?, ?, ?, ?)');
+    insert.run(1n, axis(0), 1n, 1n);
+    insert.run(2n, axis(1), 1n, 1n);
+    insert.run(3n, axis(2), 2n, 2n);
+  } catch (error) {
+    restore();
+    db.close();
+    throw error;
+  }
+  return { db, restore, repo: createSqliteRepo(db) };
+}
+
+localTest('a set holding one chunk of a skill gives that chunk similarity', async () => {
+  const { db, restore, repo } = await vectorVault('sv-vec-allow-');
+  try {
+    const query = JSON.parse(axis(0));
+    // Chunk 2 is the far chunk of skill 1: restricting to it must report its own similarity, not the best chunk's.
+    const far = await repo.searchVector(query, 10, [], { chunkIds: new Set([2]) });
+    assert.equal(far.length, 1);
+    assert.equal(far[0].id, 1);
+    assert.ok(Math.abs(far[0].sim) < 0.01);
+    const near = await repo.searchVector(query, 10, [], { chunkIds: new Set([1]) });
+    assert.equal(near.length, 1);
+    assert.equal(near[0].id, 1);
+    assert.ok(near[0].sim > 0.99);
+  } finally {
+    restore();
+    db.close();
+  }
+});
+
+localTest('an empty set gives no result', async () => {
+  const { db, restore, repo } = await vectorVault('sv-vec-empty-');
+  try {
+    assert.deepEqual(await repo.searchVector(JSON.parse(axis(0)), 10, [], { chunkIds: new Set() }), []);
+  } finally {
+    restore();
+    db.close();
+  }
+});
+
+localTest('no set gives the current output', async () => {
+  const { db, restore, repo } = await vectorVault('sv-vec-noset-');
+  try {
+    const query = JSON.parse(axis(0));
+    // Output recorded from searchVector before the allow-list existed, on this same fixture.
+    const expected = [{ id: 1, sim: 1 }, { id: 2, sim: 0 }];
+    for (const result of [
+      await repo.searchVector(query, 10),
+      await repo.searchVector(query, 10, []),
+      await repo.searchVector(query, 10, [], {}),
+      await repo.searchVector(query, 10, [], { chunkIds: undefined }),
+    ]) {
+      assert.equal(result.length, expected.length);
+      result.forEach((row, i) => {
+        assert.equal(row.id, expected[i].id);
+        assert.ok(Math.abs(row.sim - expected[i].sim) < 1e-6);
+      });
+    }
+  } finally {
+    restore();
+    db.close();
+  }
+});

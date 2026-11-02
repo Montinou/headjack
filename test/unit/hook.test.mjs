@@ -83,6 +83,34 @@ test('prompt: malformed stdin prints nothing and logs one hook.log line without 
   assert.equal(((await fsp.stat(path.join(box.dir, 'suggest', 'hook.log'))).mode & 0o777), 0o600);
 });
 
+localTest('the prompt hook never embeds and never reaches searchVector', async (t) => {
+  const box = await seededSandbox();
+  await enable(box.dir);
+  const { DatabaseSync } = await runtimeCheck();
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  // Every statement the vault runs is recorded: a vector search would prepare a chunk_vecs query.
+  const sql = [];
+  class Spy extends DatabaseSync {
+    prepare(text) { sql.push(text); return super.prepare(text); }
+    exec(text) { sql.push(text); return super.exec(text); }
+  }
+  const received = [];
+  const adapters = { localSearch: (args) => { received.push(args); return localSearch({ ...args, DatabaseSync: Spy }); } };
+  // A usable key is on offer and the global fetch is a trap: any embedding attempt would reach one of them.
+  const savedFetch = globalThis.fetch;
+  let fetched = 0;
+  globalThis.fetch = async () => { fetched += 1; throw new Error('the hook must not use the network'); };
+  t.after(() => { globalThis.fetch = savedFetch; });
+  const out = await runHook('prompt', { stdin: payload(), env: { HOME: box.home, AI_GATEWAY_API_KEY: 'test-fixture' }, home: box.home, dir: box.dir, adapters });
+  assert.match(out.stdout, /zq-helper/);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].hybrid, false);
+  assert.equal(received[0].embed, undefined);
+  assert.equal(received[0].searchOptions, undefined);
+  assert.equal(fetched, 0);
+  assert.deepEqual(sql.filter((text) => /chunk_vecs|searchVector|embedding/.test(text)), []);
+});
+
 localTest('prompt: a match prints the hookSpecificOutput JSON with the fenced block, and the same prompt again prints nothing', async () => {
   const box = await seededSandbox();
   await enable(box.dir);

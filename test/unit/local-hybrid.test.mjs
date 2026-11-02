@@ -447,3 +447,23 @@ localTest('passes() in hosted mode reads the carried fts_rank', async () => {
   assert.equal(passes(candidate, 'hosted', rule).pass, true);
   assert.equal(passes(without, 'hosted', rule).pass, false);
 });
+localTest('the search API path still returns an array and calls no callback', async () => {
+  const { searchHybrid } = await import('../../lib/local/hybrid.mjs');
+  const db = await fixture();
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const repo = createSqliteRepo(db);
+    // api.mjs passes neither searchOptions nor onFallback; the result is still the bare ranked array.
+    const rows = await searchHybrid({ db, repo, query: 'kilnstone', embed: async () => [vector()], limit: 10, tags: ['wanted'], kind: 'skill' });
+    assert.equal(Array.isArray(rows), true);
+    assert.deepEqual(rows.map(r => r.slug), ['s1']);
+    // The fallback paths with no callback also return arrays and throw nothing.
+    for (const embed of [async () => { throw Error('x'); }, undefined]) {
+      assert.equal(Array.isArray(await searchHybrid({ db, repo, query: 'kilnstone', embed, limit: 10, tags: ['wanted'] })), true);
+    }
+    // The route handler itself never builds a callback or options: its call site names neither.
+    const api = await import('node:fs').then(fs => fs.readFileSync(new URL('../../lib/local/api.mjs', import.meta.url), 'utf8'));
+    assert.doesNotMatch(api, /onFallback|searchOptions/);
+  } finally { console.error = original; db.close(); }
+});
