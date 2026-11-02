@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -12,13 +13,20 @@ import { tempDir } from '../helpers.mjs';
 import { runtimeCheck } from '../../lib/local/runtime.mjs';
 import { openVault } from '../../lib/local/schema.mjs';
 import { createSqliteRepo } from '../../lib/local/sqlite-repo.mjs';
+import { loadVec } from '../../lib/local/vec.mjs';
+import { loadSuggestConfig } from '../../lib/suggest-config.mjs';
+import { calibrate } from '../../lib/suggest-calibrate.mjs';
+import { suggestDeps } from '../../cli/suggest-deps.mjs';
 
 const CLI = fileURLToPath(new URL('../../cli/headjack.mjs', import.meta.url));
 const LAUNCHER = fileURLToPath(new URL('../../cli/headjack', import.meta.url));
 
-function runCli(args, env) {
+// `preload` is module source that runs in the child before the CLI (node --import data:…): the calibration tests use it to
+// replace globalThis.fetch, since a child process cannot be handed a fetchImpl.
+function runCli(args, env, { preload } = {}) {
+  const imports = preload === undefined ? [] : ['--import', `data:text/javascript,${encodeURIComponent(preload)}`];
   return new Promise((resolve, reject) => {
-    const child = spawn('node', [CLI, ...args], { env: { PATH: process.env.PATH, ...env }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000 });
+    const child = spawn('node', [...imports, CLI, ...args], { env: { PATH: process.env.PATH, ...env }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000 });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
@@ -560,4 +568,263 @@ sleep 2
   assert.equal(res.code, 143, res.stdout + res.stderr);
   assert.equal(existsSync(casesFile(state)), false);
   assert.equal(existsSync(path.dirname(await fsp.readFile(path.join(dir, 'seen'), 'utf8'))), false, 'the temp dir is removed');
+});
+
+// ---- --calibrate --retrieval / --rule (spec §10) ----
+// Every run below is a child process over a temporary HEADJACK_HOME with no HEADJACK_URL. Any run that sets
+// AI_GATEWAY_API_KEY also gets a fetch preload, so no test can reach the real Gateway: the preload answers every call with
+// one 1536-dimension vector per input and appends { url, input } to the file named by FETCH_LOG.
+
+const FETCH_PRELOAD = `
+import { appendFileSync } from 'node:fs';
+globalThis.fetch = async (url, init) => {
+  const input = JSON.parse(init.body).input;
+  appendFileSync(process.env.FETCH_LOG, JSON.stringify({ url: String(url), input }) + '\\n');
+  return Response.json({ data: input.map((_, index) => ({ index, embedding: [1, ...Array(1535).fill(0)] })) });
+};
+`;
+
+const KEY = { AI_GATEWAY_API_KEY: 'test-fixture' };
+const cronRows = (lang, total, nulls) => Array.from({ length: total }, (_, i) => (i < nulls
+  ? { q: `which bird sings loudest at dawn in the garden ${lang} ${i}`, slug: null, lang }
+  : { q: `please run my recurring jobs periodically using cron on server ${lang} ${i}`, slug: 'zq-helper', lang }));
+const EVAL_SET = [...cronRows('en', 20, 8), ...cronRows('es', 20, 8)];
+
+// A vault whose chunks all carry a vector (so the meta allow-lists are valid), plus the eval set and a fetch log.
+// `vectors`: true gives every chunk 1-4 a vector, 'empty' leaves chunk_vecs created but empty, false never creates it.
+async function calibrationBox({ extraChunks = 0, vectors = true } = {}) {
+  const box = await sandbox();
+  const { DatabaseSync } = await runtimeCheck();
+  const db = openVault({ dir: box.state, DatabaseSync, allowExtension: true });
+  const repo = createSqliteRepo(db);
+  await repo.publish(skill('zq-helper', 'Run recurring jobs periodically with cron', 'Sets up a crontab for recurring jobs.'));
+  await repo.publish(skill('gardening', 'Grow tomatoes', 'Water daily.'));
+  if (vectors !== false) assert.equal(loadVec(db), true, 'vendored sqlite-vec must load');
+  // publish stores no chunk rows without embeddings: add each skill's frontmatter chunk (`name: description`, as the
+  // backfill stores it) and a body chunk by hand, so chunks 1-4 are the vault's whole chunk set.
+  const addChunk = db.prepare('insert into chunks (skill_id, version_id, text, kind) values (?, ?, ?, ?)');
+  for (const s of db.prepare('select id, name, description, current_version_id from skills order by id').all()) {
+    addChunk.run(s.id, s.current_version_id, `${s.name}: ${s.description}`, 'content');
+    addChunk.run(s.id, s.current_version_id, `body of ${s.name}`, 'content');
+  }
+  if (extraChunks) {
+    db.exec('BEGIN');
+    for (let i = 0; i < extraChunks; i++) addChunk.run(2, 2, 'filler', 'content');
+    db.exec('COMMIT');
+  }
+  const put = vectors === true ? db.prepare('insert into chunk_vecs (rowid, embedding, skill_id, version_id) values (?, ?, ?, ?)') : null;
+  for (const c of vectors === true ? db.prepare('select id, skill_id, version_id from chunks where id <= 4 order by id').all() : []) {
+    put.run(BigInt(c.id), JSON.stringify([c.id % 2, (c.id + 1) % 2, ...Array(1534).fill(0)]), BigInt(c.skill_id), BigInt(c.version_id));
+  }
+  db.close();
+  await fsp.mkdir(path.join(box.state, 'suggest'), { recursive: true });
+  await fsp.writeFile(path.join(box.state, 'suggest', 'eval.json'), JSON.stringify(EVAL_SET));
+  const log = path.join(await tempDir('sv-sg-fetchlog-'), 'fetch.jsonl');
+  const fetched = async () => (existsSync(log) ? (await fsp.readFile(log, 'utf8')).split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  return { ...box, log, fetched, env: { ...box.env, FETCH_LOG: log } };
+}
+
+const calibrateJson = async (box, args, extraEnv = {}) => {
+  const res = await runCli(['suggest', '--calibrate', '--mode', 'local', ...args, '--json'], { ...box.env, ...extraEnv }, { preload: FETCH_PRELOAD });
+  assert.equal(res.code, 0, res.stdout + res.stderr);
+  return { res, out: JSON.parse(res.stdout) };
+};
+const pairOf = (out, retrieval, ruleName) => out.pairs.find((p) => p.retrieval === retrieval && p.ruleName === ruleName);
+
+localTest('the default fts x gap run keeps the previous per-language metrics, counts and recommended thresholds (the new fields are excluded from the comparison)', async () => {
+  const box = await calibrationBox();
+  const { out } = await calibrateJson(box, []);
+  // The previous CLI: hybrid deps, no key, so every row fell back to full text.
+  const ctx = { env: { ...box.env }, dir: box.state, home: box.home, cwd: process.cwd() };
+  const config = await loadSuggestConfig(box.state);
+  const before = await calibrate({
+    rows: EVAL_SET, mode: 'local', config, cwd: ctx.cwd, home: ctx.home,
+    depsFor: (sessionId) => suggestDeps({ ctx, config, sessionId, purpose: 'eval', migrate: true, hybrid: true }),
+  });
+  const counts = (report) => Object.fromEntries(Object.entries(report.current).map(([lang, m]) => [lang, [m.precision, m.recall]]));
+  const folded = (report) => Object.fromEntries(Object.entries(report.cv.perLang).map(([lang, l]) => [lang, [l.rows, l.train.precision, l.train.recall, l.heldOut.precision, l.heldOut.recall, l.folds.map((f) => f.chosen)]]));
+  assert.deepEqual(counts(out), counts(before));
+  assert.deepEqual(folded(out), folded(before));
+  assert.deepEqual(out.cv.recommended, before.cv.recommended);
+  assert.deepEqual(out.rule, before.rule);
+  assert.deepEqual([out.mode, out.decisionMode, out.folds, out.seed, out.skipped, out.max], [before.mode, before.decisionMode, before.folds, before.seed, before.skipped, before.max]);
+  assert.deepEqual(out.rows.map((r) => r.suggested), before.rows.map((r) => r.suggested));
+  assert.equal(out.pairs.length, 1);
+  assert.deepEqual([out.pairs[0].retrieval, out.pairs[0].ruleName], ['fts', 'gap']);
+  assert.ok(Object.values(out.current).some((m) => m.recall.n > 0), 'the fixture must offer something');
+});
+
+localTest('fts with no key reports no fallback and is valid', async () => {
+  const box = await calibrationBox();
+  const { out } = await calibrateJson(box, ['--retrieval', 'fts']);
+  const fts = pairOf(out, 'fts', 'gap');
+  assert.equal(fts.valid, true);
+  assert.equal(fts.reason, null);
+  assert.equal(fts.fallbackRows, 0);
+  assert.ok(fts.rows.every((r) => r.fallback === null));
+  assert.deepEqual(await box.fetched(), []);
+});
+
+localTest('fts x rank-sim prints zero offers and says why (no vector signals)', async () => {
+  const box = await calibrationBox();
+  const { out } = await calibrateJson(box, ['--retrieval', 'fts', '--rule', 'rank-sim']);
+  const pair = pairOf(out, 'fts', 'rank-sim');
+  assert.equal(pair.valid, true);
+  assert.equal(pair.decisionMode, 'hosted');
+  assert.deepEqual(pair.current.en.precision, { pct: null, n: 0, d: 0 });
+  assert.deepEqual(pair.current.en.recall, { pct: 0, n: 0, d: 12 });
+  const gap = await calibrateJson(box, ['--retrieval', 'fts', '--rule', 'gap']);
+  assert.ok(gap.out.current.en.recall.n > 0, 'while gap offers on the same candidates');
+  assert.match(pair.note, /no vector signals/);
+  const text = await runCli(['suggest', '--calibrate', '--mode', 'local', '--retrieval', 'fts', '--rule', 'rank-sim'], box.env, { preload: FETCH_PRELOAD });
+  assert.equal(text.code, 0, text.stderr);
+  assert.match(text.stdout, /fts x rank-sim/);
+  assert.match(text.stdout, /no vector signals/);
+});
+
+localTest('fts makes no embed call with a key present', async () => {
+  const box = await calibrationBox();
+  const { out } = await calibrateJson(box, ['--retrieval', 'fts'], KEY);
+  assert.equal(pairOf(out, 'fts', 'gap').valid, true);
+  assert.deepEqual(await box.fetched(), []);
+});
+
+localTest('hybrid pairs embed each prompt once across configurations', async () => {
+  const box = await calibrationBox();
+  const { out } = await calibrateJson(box, ['--retrieval', 'hybrid,hybrid-meta', '--rule', 'gap,rank-sim'], KEY);
+  assert.equal(out.pairs.length, 4);
+  for (const pair of out.pairs) assert.equal(pair.valid, true, `${pair.retrieval} x ${pair.ruleName}: ${pair.reason}`);
+  const embedded = (await box.fetched()).flatMap((call) => call.input).sort();
+  assert.deepEqual(embedded, EVAL_SET.map((r) => r.q).sort(), 'every prompt exactly once');
+});
+
+localTest('a rank-sim pair makes no hosted request', async () => {
+  const box = await calibrationBox();
+  const { out } = await calibrateJson(box, ['--retrieval', 'fts,hybrid', '--rule', 'rank-sim'], KEY);
+  assert.equal(out.mode, 'local');
+  assert.equal(out.decisionMode, 'hosted');
+  assert.ok((await box.fetched()).every((call) => call.url.includes('/v1/embeddings')), 'only the embeddings endpoint is called');
+  assert.ok((await box.fetched()).length > 0);
+});
+
+localTest('a missing vec library makes every hybrid pair invalid and fts still prints', async () => {
+  const box = await calibrationBox();
+  const { out, res } = await calibrateJson(box, ['--retrieval', 'fts,hybrid,hybrid-meta,hybrid-meta-tags'], { ...KEY, HEADJACK_VEC_PATH: '/missing-t7-vec' });
+  const fts = pairOf(out, 'fts', 'gap');
+  assert.equal(fts.valid, true);
+  assert.ok(fts.current.en && fts.cv.recommended.en, 'fts is scored');
+  for (const name of ['hybrid', 'hybrid-meta', 'hybrid-meta-tags']) {
+    const pair = pairOf(out, name, 'gap');
+    assert.equal(pair.valid, false, name);
+    assert.equal(pair.reason, 'vec-unavailable', name);
+    assert.equal(pair.current, undefined, `${name} is not scored`);
+    assert.equal(pair.cv, undefined, `${name} is not scored`);
+  }
+  assert.deepEqual(await box.fetched(), [], 'an invalid pair embeds nothing');
+  const text = await runCli(['suggest', '--calibrate', '--mode', 'local', '--retrieval', 'fts,hybrid'], { ...box.env, ...KEY, HEADJACK_VEC_PATH: '/missing-t7-vec' }, { preload: FETCH_PRELOAD });
+  assert.equal(text.code, 0, text.stderr);
+  assert.match(text.stdout, /hybrid x gap[\s\S]*invalid: vec-unavailable/);
+  assert.match(text.stdout, /fts x gap[\s\S]*precision/);
+  void res;
+});
+
+for (const vectors of [false, 'empty']) {
+  localTest(`a vault with the vec library but ${vectors === false ? 'no chunk_vecs table' : 'an empty chunk_vecs table'} makes every hybrid pair invalid and fts still prints`, async () => {
+    const box = await calibrationBox({ vectors });
+    const { out } = await calibrateJson(box, ['--retrieval', 'fts,hybrid,hybrid-meta,hybrid-meta-tags'], KEY);
+    const fts = pairOf(out, 'fts', 'gap');
+    assert.equal(fts.valid, true);
+    assert.ok(fts.current.en && fts.cv.recommended.en, 'fts is scored');
+    for (const name of ['hybrid', 'hybrid-meta', 'hybrid-meta-tags']) {
+      const pair = pairOf(out, name, 'gap');
+      assert.equal(pair.valid, false, name);
+      assert.equal(pair.reason, 'vec-unavailable', name);
+      assert.equal(pair.current, undefined, `${name} is not scored`);
+    }
+    assert.deepEqual(await box.fetched(), [], 'an invalid pair embeds nothing');
+    if (vectors === false) {
+      const { DatabaseSync } = await runtimeCheck();
+      const db = openVault({ dir: box.state, DatabaseSync });
+      try {
+        assert.equal(db.prepare("select count(*) as n from sqlite_master where name = 'chunk_vecs'").get().n, 0, 'the calibration does not create chunk_vecs');
+      } finally { db.close(); }
+    }
+  });
+}
+
+localTest('an unset AI_GATEWAY_API_KEY reports no-key and invalidates hybrid pairs', async () => {
+  const box = await calibrationBox();
+  const { out } = await calibrateJson(box, ['--retrieval', 'fts,hybrid']);
+  const hybrid = pairOf(out, 'hybrid', 'gap');
+  assert.equal(hybrid.valid, false);
+  assert.equal(hybrid.reason, 'no-key');
+  assert.equal(hybrid.fallbackRows, EVAL_SET.length);
+  assert.ok(hybrid.rows.every((r) => r.fallback === 'no-key'));
+  assert.equal(hybrid.current, undefined);
+  assert.equal(pairOf(out, 'fts', 'gap').valid, true);
+  assert.deepEqual(await box.fetched(), []);
+});
+
+localTest('a pair above 4096 chunks prints invalid with its reason', async () => {
+  const box = await calibrationBox({ extraChunks: 4100 });
+  const { out } = await calibrateJson(box, ['--retrieval', 'fts,hybrid,hybrid-meta,hybrid-meta-tags'], KEY);
+  assert.ok(out.chunkCount > 4096);
+  for (const name of ['hybrid', 'hybrid-meta', 'hybrid-meta-tags']) {
+    const pair = pairOf(out, name, 'gap');
+    assert.deepEqual([pair.valid, pair.reason, pair.current], [false, 'chunk-count-above-4096', undefined], name);
+  }
+  assert.equal(pairOf(out, 'fts', 'gap').valid, true);
+  assert.deepEqual(await box.fetched(), []);
+  const text = await runCli(['suggest', '--calibrate', '--mode', 'local', '--retrieval', 'hybrid'], { ...box.env, ...KEY }, { preload: FETCH_PRELOAD });
+  assert.equal(text.code, 0, text.stderr);
+  assert.match(text.stdout, /hybrid x gap[\s\S]*invalid: chunk-count-above-4096/);
+});
+
+localTest('a malformed sidecar invalidates the hybrid pairs and never throws', async () => {
+  const box = await calibrationBox();
+  await fsp.writeFile(path.join(box.state, 'eval-tag-chunks.json'), '{ not json');
+  const { out } = await calibrateJson(box, ['--retrieval', 'fts,hybrid,hybrid-meta,hybrid-meta-tags'], KEY);
+  for (const name of ['hybrid', 'hybrid-meta', 'hybrid-meta-tags']) {
+    const pair = pairOf(out, name, 'gap');
+    assert.deepEqual([pair.valid, pair.reason, pair.current], [false, 'invalid-sidecar', undefined], name);
+  }
+  assert.equal(pairOf(out, 'fts', 'gap').valid, true);
+  assert.deepEqual(await box.fetched(), []);
+});
+
+localTest('--json carries sha256, seed, chunk count, fallback count and validity', async () => {
+  const box = await calibrationBox();
+  const { out } = await calibrateJson(box, ['--retrieval', 'fts,hybrid'], KEY);
+  const expected = createHash('sha256').update(await fsp.readFile(path.join(box.state, 'suggest', 'eval.json'))).digest('hex');
+  for (const pair of out.pairs) {
+    assert.equal(pair.sha256, expected);
+    assert.equal(pair.seed, 17);
+    assert.equal(pair.folds, 5);
+    assert.equal(pair.chunkCount, 4);
+    assert.equal(pair.fallbackRows, 0);
+    assert.equal(pair.valid, true);
+    assert.equal(pair.reason, null);
+  }
+  assert.equal(out.sha256, expected);
+  assert.equal(out.chunkCount, 4);
+  assert.ok(!existsSync(path.join(box.state, 'config.json')), 'config.json is never written');
+  assert.ok(!JSON.stringify(out).includes('recurring jobs'), 'the JSON carries no prompt text');
+});
+
+test('an unknown --retrieval value exits 2', async () => {
+  const box = await sandbox();
+  for (const args of [
+    ['--retrieval', 'dense'], ['--retrieval', 'fts,dense'], ['--rule', 'strict'], ['--retrieval', ''], ['--rule', 'gap,'],
+    ['--retrieval', 'fts', '--mode', 'hosted'], ['--rule', 'gap', '--mode', 'hosted'],
+  ]) {
+    const res = await runCli(['suggest', '--calibrate', ...args], box.env);
+    assert.equal(res.code, 2, `${args.join(' ')}: ${res.stdout}${res.stderr}`);
+    assert.match(res.stderr, /--retrieval|--rule/, args.join(' '));
+  }
+  for (const args of [['--retrieval', 'fts'], ['--rule', 'gap']]) {
+    const res = await runCli(['suggest', ...args], box.env);
+    assert.equal(res.code, 2, args.join(' '));
+    assert.match(res.stderr, /--calibrate/);
+  }
+  assert.ok(!existsSync(path.join(box.state, 'config.json')));
 });

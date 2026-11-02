@@ -51,9 +51,18 @@ Every bullet is pinned by a test: the shapes, exit codes and environment inputs 
     The one file that holds prompt text is `<state dir>/suggest/cases.jsonl`, written only by `suggest --save`.
   - Not part of the contract, and free to change without a new version (they are tested in `test/unit/suggest-*.test.mjs`,
     not here): the diagnostics `suggest --report [--since 7d|12h|30m] [--json]`, which prints the outcome of past
-    suggestions from `log.jsonl`; `suggest --calibrate [--mode local|hosted] [--json]`, which searches the eval set
-    `<state dir>/suggest/eval.json` and prints precision and recall per language (a set with fewer than 20 rows per
-    language, 8 of them with `slug: null`, exits 2); and `suggest --save --expect <slug|none>
+    suggestions from `log.jsonl`; `suggest --calibrate [--mode local|hosted] [--retrieval a,b] [--rule a,b] [--json]`,
+    which searches the eval set `<state dir>/suggest/eval.json` and prints precision and recall per language (a set with
+    fewer than 20 rows per language, 8 of them with `slug: null`, exits 2). With `--mode local`, `--retrieval`
+    (`fts|hybrid|hybrid-meta|hybrid-meta-tags`, default `fts`) and `--rule` (`gap|rank-sim`, default `gap`) pick the
+    retrieval configurations and decision rules to compare, one block per pair; an unknown value, or either option with
+    `--mode hosted`, exits 2. The `--json` report is the first pair's block (the report of earlier versions) plus a
+    `pairs` array with every block. A block holds `mode` (how rows were searched), `decisionMode` (`local` for `gap`,
+    `hosted` for `rank-sim`: the rule that decides them offline), `retrieval`, `ruleName`, `sha256` (of `eval.json`),
+    `seed`, `folds`, `chunkCount` (`null` when no hybrid pair was asked for), `searchedRows`, `fallbackRows`,
+    `fallbackReasons`, `valid` and `reason` (`null` when valid; otherwise why the pair was not scored, in which case
+    `current` and `cv` are absent), and `note` on `fts` x `rank-sim`. `current`, `cv` and `rule` follow `decisionMode`; each entry of `rows` keeps
+    what the search run itself suggested, under the search mode's rule; and `suggest --save --expect <slug|none>
     [--lang es|en]`, which appends the prompt, read from stdin or, on a terminal, from `$VISUAL` or `$EDITOR`, to
     `cases.jsonl`. A misused flag exits 2, and none of them writes `config.json`.
   - `headjack hook prompt|warmup|skill-used` is what the plugin hooks run. It is internal, not part of the contract: it

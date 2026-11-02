@@ -30,7 +30,7 @@ const USAGE = `headjack — personal skill vault
   headjack suggest "<text>" [--json] [--explain] [--session-id <id>]
   headjack suggest --enable [--hosted|--local] | --disable
   headjack suggest --report [--since 7d|12h|30m] [--json]
-  headjack suggest --calibrate [--mode local|hosted] [--json]
+  headjack suggest --calibrate [--mode local|hosted] [--retrieval fts,hybrid,hybrid-meta,hybrid-meta-tags] [--rule gap,rank-sim] [--json]
   headjack suggest --save --expect <slug|none> [--lang es|en]   (prompt from stdin, or $VISUAL / $EDITOR on a terminal)
   headjack hook prompt|warmup|skill-used   (internal: run by the Claude Code hooks, not by hand)
   headjack list [--active] [--json]
@@ -55,6 +55,12 @@ suggestion log, how many suggestions were taken (hit), left alone (ignored) or b
 --calibrate measures the suggestions against <state dir>/suggest/eval.json (rows of { q, slug | null, lang }, at least 20 per
 language including 8 with slug: null): precision, recall and latency per language with their raw counts, and 5-fold
 cross-validated thresholds printed as guidance. --mode picks the search (default: suggest.hosted). It never writes config.json.
+With --mode local, --retrieval (default fts) and --rule (default gap) take comma-separated lists and the run prints one
+block per retrieval x rule pair: fts is full text only and never embeds; hybrid, hybrid-meta and hybrid-meta-tags also
+embed each prompt once (secret scan first, key in AI_GATEWAY_API_KEY, loadable sqlite-vec) and restrict the vector
+neighbours to an allow-list of chunks; gap decides with the local rule, rank-sim with the hosted rank-and-similarity rule,
+applied offline. A pair that cannot be measured (no vec, no key, more than 4096 chunks, a bad or stale
+<state dir>/eval-tag-chunks.json, more than 5% of rows fallen back) is printed with its reason and not scored.
 
 embed (local mode only; no flags or slugs) backfills current versions, independently of enrich.enabled. Requires an AI
 Gateway key in AI_GATEWAY_API_KEY or <state dir>/ai-gateway-key (mode 0600), and loadable sqlite-vec (HEADJACK_VEC_PATH
@@ -120,6 +126,8 @@ const OPTIONS = {
   local: { type: 'boolean' },
   report: { type: 'boolean' },
   calibrate: { type: 'boolean' },
+  retrieval: { type: 'string' },
+  rule: { type: 'string' },
   mode: { type: 'string' },
   since: { type: 'string' },
   save: { type: 'boolean' },
@@ -166,7 +174,7 @@ function mcpEnvironment(env) {
   return { mode, origin };
 }
 
-const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable | suggest --report [--since <dur>] [--json] | suggest --calibrate [--mode local|hosted] [--json] | suggest --save --expect <slug|none> [--lang es|en]';
+const SUGGEST_USAGE = 'suggest "<text>" [--json] [--explain] [--session-id <id>] | suggest --enable [--hosted|--local] | suggest --disable | suggest --report [--since <dur>] [--json] | suggest --calibrate [--mode local|hosted] [--retrieval a,b] [--rule a,b] [--json] | suggest --save --expect <slug|none> [--lang es|en]';
 const dash = (v) => (v === null || v === undefined ? '-' : v);
 
 // One --explain line per candidate: the signals, then what the filters decided.
@@ -298,7 +306,7 @@ async function main(argv) {
         if ((o.expect !== undefined || o.lang !== undefined) && !o.save) throw new UserError('--expect and --lang go with --save (headjack suggest --save --expect <slug|none>)');
         if (o.save) {
           if (text) throw new UserError('--save never takes the prompt as an argument (shell history keeps it): pipe it on stdin or let it open $VISUAL / $EDITOR');
-          if (o.report || o.calibrate || o.mode !== undefined || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o.json || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--save takes no other suggest option except --expect and --lang (usage: headjack ${SUGGEST_USAGE})`);
+          if (o.report || o.calibrate || o.retrieval !== undefined || o.rule !== undefined || o.mode !== undefined || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o.json || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--save takes no other suggest option except --expect and --lang (usage: headjack ${SUGGEST_USAGE})`);
           if (o.expect === undefined) throw new UserError('--save needs --expect <slug|none>: the skill this prompt should surface, or none');
           const [{ SLUG_RE }, { guessLang }, { appendCase }, { readPrompt }] = await Promise.all([
             import('../lib/handlers.mjs'), import('../lib/suggest.mjs'), import('../lib/suggest-log.mjs'), import('./suggest-save.mjs'),
@@ -311,26 +319,106 @@ async function main(argv) {
           return 0;
         }
         if (o.mode !== undefined && !o.calibrate) throw new UserError('--mode goes with --calibrate (headjack suggest --calibrate --mode hosted)');
+        if ((o.retrieval !== undefined || o.rule !== undefined) && !o.calibrate) throw new UserError('--retrieval and --rule go with --calibrate (headjack suggest --calibrate --mode local --retrieval hybrid --rule rank-sim)');
         if (o.calibrate) {
-          if (text || o.report || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--calibrate takes no text and no other suggest option except --mode and --json (usage: headjack ${SUGGEST_USAGE})`);
+          if (text || o.report || o.since !== undefined || o.enable || o.disable || o.hosted || o.local || o.explain || o['session-id'] !== undefined || o.k !== undefined || o.tag?.length || o.purpose !== undefined || o.project) throw new UserError(`--calibrate takes no text and no other suggest option except --mode, --retrieval, --rule and --json (usage: headjack ${SUGGEST_USAGE})`);
           const asked = o.mode === undefined ? undefined : oneOf(o.mode, ['local', 'hosted'], '--mode');
-          const [{ loadSuggestConfig }, { evalFile, loadEvalSet, checkMinimums, calibrate, formatCalibration }, { suggestDeps }] = await Promise.all([
+          const [{ loadSuggestConfig }, calibration, { suggestDeps }] = await Promise.all([
             import('../lib/suggest-config.mjs'), import('../lib/suggest-calibrate.mjs'), import('./suggest-deps.mjs'),
           ]);
+          const {
+            evalFile, loadEvalSet, checkMinimums, calibrate, scoreSearched, searchRows, formatRun, pairBlock, evalSha256,
+            fallbackSummary, fallbackInvalid, RETRIEVALS, RULES, RULE_MODE,
+          } = calibration;
+          const list = (value, allowed, name) => {
+            const items = value.split(',').map((item) => item.trim());
+            for (const item of items) oneOf(item, allowed, name);
+            return [...new Set(items)];
+          };
+          const retrievals = o.retrieval === undefined ? ['fts'] : list(o.retrieval, RETRIEVALS, '--retrieval');
+          const rules = o.rule === undefined ? ['gap'] : list(o.rule, RULES, '--rule');
           const config = await loadSuggestConfig(ctx.dir);
-          const rows = await loadEvalSet(ctx.dir);
-          const missing = checkMinimums(rows);
-          if (missing.length) throw new UserError(`the eval set ${evalFile(ctx.dir)} is too small to calibrate (it needs 20 rows per language, 8 of them with slug: null):\n  ${missing.join('\n  ')}`);
           // The mode follows --mode, else suggest.hosted only, never HEADJACK_MODE or HEADJACK_URL. Each row is searched once
           // with purpose eval and entry eval: no log, no active state. Like the manual entry, it migrates the vault, so a
           // plugin update that adds migrations does not skip every row. config.json is never written.
           const mode = asked ?? (config.suggest.hosted ? 'hosted' : 'local');
-          const report = await calibrate({
-            rows, mode, config, cwd: ctx.cwd, home: ctx.home,
-            depsFor: (sessionId) => suggestDeps({ ctx, config, sessionId, purpose: 'eval', migrate: true, hybrid: true }),
-          });
-          // The kept search records stay out of the JSON: they are working data, not the report.
-          console.log(o.json ? JSON.stringify({ ...report, rows: report.rows.map(({ record, ...row }) => row) }, null, 2) : formatCalibration(report));
+          // Retrieval configurations and rules are measured on local candidates only.
+          if (mode === 'hosted' && (o.retrieval !== undefined || o.rule !== undefined)) throw new UserError('--retrieval and --rule need --mode local: a hosted search has no retrieval configurations (headjack suggest --calibrate --mode local --retrieval hybrid)');
+          const rows = await loadEvalSet(ctx.dir);
+          const missing = checkMinimums(rows);
+          if (missing.length) throw new UserError(`the eval set ${evalFile(ctx.dir)} is too small to calibrate (it needs 20 rows per language, 8 of them with slug: null):\n  ${missing.join('\n  ')}`);
+          const sha256 = await evalSha256(ctx.dir);
+          const toJson = (block) => ({ ...block, rows: block.rows.map(({ record, ...row }) => row) });
+          let blocks;
+          if (mode === 'hosted') {
+            const scored = await calibrate({
+              rows, mode, config, cwd: ctx.cwd, home: ctx.home,
+              depsFor: (sessionId) => suggestDeps({ ctx, config, sessionId, purpose: 'eval', migrate: true, hybrid: true }),
+            });
+            blocks = [pairBlock({ retrieval: 'hosted', ruleName: 'rank-sim', sha256, chunkCount: null, searched: scored.rows, invalid: null, scored })];
+          } else {
+            blocks = [];
+            const hybridAsked = retrievals.some((name) => name !== 'fts');
+            // The allow-lists are built once, and only when a hybrid configuration was asked for. The vault is opened
+            // extension-enabled (a vault left at an older schema is migrated, as in the search) and sqlite-vec is tried first;
+            // a failed load or a missing chunk_vecs table is vec-unavailable, never a throw. A sidecar that cannot be read
+            // invalidates every pair, since each one excludes the sidecar's chunks.
+            let allow = null;
+            if (hybridAsked) {
+              const [{ vaultFile, openVault }, { runtimeCheck }, { loadVec }, { buildAllowLists, readSidecar }, { existsSync }] = await Promise.all([
+                import('../lib/local/schema.mjs'), import('../lib/local/runtime.mjs'), import('../lib/local/vec.mjs'), import('../lib/suggest-eval-chunks.mjs'), import('node:fs'),
+              ]);
+              if (existsSync(vaultFile(ctx.dir))) {
+                let sidecar = null;
+                let sidecarProblem = false;
+                try { sidecar = readSidecar(ctx.dir); } catch { sidecarProblem = true; }
+                const { DatabaseSync } = await runtimeCheck();
+                const db = openVault({ dir: ctx.dir, DatabaseSync, allowExtension: true });
+                try {
+                  // loadVec creates an empty chunk_vecs when it is absent, so presence is read before it runs; an absent or
+                  // empty table means no vectors, which is vec-unavailable, not a full-text run scored as hybrid.
+                  const hadVecTable = db.prepare("select count(*) as n from sqlite_master where name = 'chunk_vecs'").get().n === 1;
+                  let vecLoaded = false;
+                  try { vecLoaded = hadVecTable && loadVec(db) === true && db.prepare('select count(*) as n from chunk_vecs').get().n > 0; } catch { vecLoaded = false; }
+                  allow = buildAllowLists({ db, sidecar, vecLoaded });
+                } finally { db.close(); }
+                if (sidecarProblem) {
+                  for (const name of ['hybrid', 'hybrid-meta', 'hybrid-meta-tags']) {
+                    if (!['vec-unavailable', 'chunk-count-above-4096'].includes(allow.invalid[name])) allow.invalid[name] = 'invalid-sidecar';
+                  }
+                }
+              }
+            }
+            // One memo for every hybrid configuration: a prompt reaches the Gateway once. No key, no embedder: rows say no-key.
+            const key = (ctx.env.AI_GATEWAY_API_KEY ?? '').trim();
+            let embed;
+            if (hybridAsked && key) {
+              const { embedTexts, memoEmbed } = await import('./embed-local.mjs');
+              embed = memoEmbed((texts) => embedTexts({ texts, key }));
+            }
+            for (const retrieval of retrievals) {
+              const upFront = retrieval === 'fts' ? undefined : allow?.invalid[retrieval];
+              let searched;
+              if (!upFront) {
+                const chunkIds = retrieval === 'fts' ? undefined : allow?.lists[retrieval];
+                searched = await searchRows(rows, {
+                  mode, config, cwd: ctx.cwd, home: ctx.home,
+                  depsFor: (sessionId) => suggestDeps({
+                    ctx, config, sessionId, purpose: 'eval', migrate: true,
+                    hybrid: retrieval !== 'fts', ...(retrieval === 'fts' ? {} : { embed, searchOptions: { chunkIds } }),
+                  }),
+                });
+              }
+              const invalid = upFront ?? (searched ? fallbackInvalid(fallbackSummary(searched)) : null);
+              for (const ruleName of rules) {
+                const scored = invalid ? undefined : await scoreSearched(searched, { rows, mode, decisionMode: RULE_MODE[ruleName], config });
+                blocks.push(pairBlock({ retrieval, ruleName, sha256, chunkCount: allow?.chunkCount ?? null, searched, invalid, scored }));
+              }
+            }
+          }
+          // The kept search records stay out of the JSON: they are working data, not the report. The top level is the first
+          // pair's block (the report of earlier versions, for its consumers); `pairs` lists every block.
+          console.log(o.json ? JSON.stringify({ ...toJson(blocks[0]), pairs: blocks.map(toJson) }, null, 2) : formatRun(blocks));
           return 0;
         }
         if (o.since !== undefined && !o.report) throw new UserError('--since goes with --report (headjack suggest --report --since 7d)');
