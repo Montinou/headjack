@@ -1,7 +1,7 @@
 // Local embeddings go through one AI Gateway fetch. No test makes a network call.
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { embedTexts } from '../../cli/embed-local.mjs';
+import { embedTexts, memoEmbed } from '../../cli/embed-local.mjs';
 
 const URL = 'https://ai-gateway.vercel.sh/v1/embeddings';
 const KEY = 'gw-test-key-0123456789';
@@ -292,3 +292,58 @@ for (const phase of ['request', 'body']) {
     await assert.rejects(embedTexts({ texts: [PHRASE], key: KEY, fetchImpl, timeoutMs: TEST_WATCHDOG_MS }), rejectsWithoutLeak);
   });
 }
+
+// The query-vector memo: in-process, exact-text keys, no network. Every embed function here is injected.
+describe('memoEmbed', () => {
+  function countingEmbed() {
+    const calls = [];
+    const embed = async (texts) => {
+      calls.push([...texts]);
+      return texts.map((text) => [text.length, 1]);
+    };
+    return { embed, calls };
+  }
+
+  test('the same text embeds once', async () => {
+    const { embed, calls } = countingEmbed();
+    const memo = memoEmbed(embed);
+    const first = await memo(['alpha']);
+    const second = await memo(['alpha']);
+    assert.deepEqual(first, [[5, 1]]);
+    assert.deepEqual(second, first);
+    assert.equal(calls.length, 1);
+  });
+
+  test('different texts embed separately', async () => {
+    const { embed, calls } = countingEmbed();
+    const memo = memoEmbed(embed);
+    assert.deepEqual(await memo(['alpha']), [[5, 1]]);
+    assert.deepEqual(await memo(['beta!']), [[5, 1]]);
+    assert.deepEqual(await memo(['gamma']), [[5, 1]]);
+    assert.deepEqual(calls, [['alpha'], ['beta!'], ['gamma']]);
+  });
+
+  test('a failure is not cached', async () => {
+    const calls = [];
+    let fail = true;
+    const embed = async (texts) => {
+      calls.push([...texts]);
+      if (fail) throw new Error('boom');
+      return texts.map(() => [9]);
+    };
+    const memo = memoEmbed(embed);
+    await assert.rejects(memo(['alpha']), /boom/);
+    fail = false;
+    assert.deepEqual(await memo(['alpha']), [[9]]);
+    assert.equal(calls.length, 2);
+  });
+
+  test('a batch of cached and new texts calls the underlying embed with the new ones only', async () => {
+    const { embed, calls } = countingEmbed();
+    const memo = memoEmbed(embed);
+    await memo(['alpha']);
+    const out = await memo(['alpha', 'be', 'alpha', 'be']);
+    assert.deepEqual(out, [[5, 1], [2, 1], [5, 1], [2, 1]]);
+    assert.deepEqual(calls, [['alpha'], ['be']]);
+  });
+});

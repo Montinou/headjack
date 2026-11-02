@@ -77,3 +77,17 @@ export async function embedTexts({
     clearTimeout(timer);
   }
 }
+
+// In-process memo over an embed function. Keys are the exact text; the cache lives as long as the returned function.
+// Only texts not yet cached (deduplicated) reach `embed`. A rejected call caches nothing.
+export function memoEmbed(embed) {
+  const cache = new Map();
+  return async (texts) => {
+    const missing = [...new Set(texts.filter((text) => !cache.has(text)))];
+    if (missing.length > 0) {
+      const vectors = await embed(missing);
+      missing.forEach((text, i) => cache.set(text, vectors[i]));
+    }
+    return texts.map((text) => cache.get(text));
+  };
+}
