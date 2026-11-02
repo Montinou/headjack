@@ -411,3 +411,39 @@ localTest('F4 decision signals and fused metadata share a snapshot after embeddi
     publisher.exec("update skills set name = 'After read' where id = 1");
   } finally { publisher.close(); }
 });
+localTest('a merged candidate in both lists carries the fused fts_rank', async () => {
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  const dir = await callerFixture();
+  const calls = [];
+  const { candidates } = await localSearch({ dir, query: 'deploy recurring cron jobs', hybrid: true, env: { AI_GATEWAY_API_KEY: 'test-fixture' }, fetchImpl: gateway(calls) });
+  const candidate = candidates.find(c => c.slug === 'cron-top');
+  assert.equal(candidate.table_rank, 1);
+  assert.equal(candidate.vector_rank, 3);
+  assert.equal(candidate.fts_rank, 1);
+  assert.equal(calls.length, 1);
+});
+localTest('a full-text-only candidate carries fts_rank null', async () => {
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  const dir = await callerFixture();
+  let fetched = 0;
+  // Without a key there is no fused list: the candidate comes from the full-text signal read alone.
+  const { candidates } = await localSearch({ dir, query: 'deploy recurring cron jobs', hybrid: true, env: {}, fetchImpl: async () => { fetched++; throw Error('keyless must not fetch'); } });
+  const candidate = candidates.find(c => c.slug === 'cron-top');
+  assert.equal(candidate.table_rank, 1);
+  assert.equal(candidate.matched, 'fts');
+  assert.equal(candidate.fts_rank, null);
+  assert.equal(fetched, 0);
+});
+localTest('passes() in hosted mode reads the carried fts_rank', async () => {
+  const { localSearch } = await import('../../lib/suggest-local.mjs');
+  const { passes } = await import('../../lib/suggest-rule.mjs');
+  const dir = await callerFixture();
+  const { candidates } = await localSearch({ dir, query: 'deploy recurring cron jobs', hybrid: true, env: { AI_GATEWAY_API_KEY: 'test-fixture' }, fetchImpl: gateway([]) });
+  const candidate = candidates.find(c => c.slug === 'cron-top');
+  // vector_rank 3 (not 1), so passesHosted cannot take the vector-only branch and must read fts_rank.
+  const rule = { maxRanks: 3, minSimilarity: 0 };
+  const without = { ...candidate };
+  delete without.fts_rank;
+  assert.equal(passes(candidate, 'hosted', rule).pass, true);
+  assert.equal(passes(without, 'hosted', rule).pass, false);
+});
