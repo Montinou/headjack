@@ -10,10 +10,11 @@ import { importGraph, escapesScan, ROOT } from '../test/import-scanner.mjs';
 
 const ENTRY = 'cli/headjack.mjs';
 
-// Files the CLI reaches through `new URL(..., import.meta.url)` instead of an import: the manifest pluginVersion() reads
-// for the MCP serverInfo.version, the launcher `suggest` and the hook name, and the skill-finder directory `import`
-// links into each harness. A directory is copied whole.
-export const BY_PATH = ['.claude-plugin/plugin.json', 'cli/headjack', 'skill-finder'];
+// Files reached by path instead of an import: the manifest pluginVersion() reads for the MCP serverInfo.version, the
+// launcher `suggest` and the hook name, the skill-finder directory `import` links into each harness, and the sqlite-vec
+// loadables lib/local/vec.mjs looks for. The marketplace installs the plugin from this package too, so it also carries
+// what .claude-plugin/plugin.json names: the hooks and the writing-skills skill. A directory is copied whole.
+export const BY_PATH = ['.claude-plugin/plugin.json', 'cli/headjack', 'cli/vendor', 'skill-finder', 'writing-skills', 'plugin-hooks'];
 
 async function listFiles(root, rel) {
   const out = [];
